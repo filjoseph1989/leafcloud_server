@@ -1,0 +1,26 @@
+# Python virtual environment
+# This is the folder created by `python -m venv venv`
+venv/
+.venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor files
+.idea/
+.vscode/
+
+# OS-specific files
+.DS_Store
+
+# Build and distribution artifacts
+build/
+dist/
+*.egg-info/
+
+# Uvicorn/Starlette temp files
+.webassets-cache
