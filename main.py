@@ -1,6 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
+from enum import Enum
 from typing import List
 from datetime import datetime
 
@@ -20,12 +21,23 @@ class PredictionData(BaseModel):
     p_ppm: float
     k_ppm: float
 
+# Define allowed status values using an Enum for robustness
+class NutrientStatus(str, Enum):
+    ok = "ok"
+    low = "low"
+    high = "high"
+
+class OverallStatus(str, Enum):
+    ok = "ok"
+    warning = "warning"
+    danger = "danger"
+
 # Sub-model for 'status' in latest_response.json
 class StatusData(BaseModel):
-    n_status: str
-    p_status: str
-    k_status: str
-    overall_status: str
+    n_status: NutrientStatus
+    p_status: NutrientStatus
+    k_status: NutrientStatus
+    overall_status: OverallStatus
 
 # Main model for latest_response.json
 class LatestReadingResponse(BaseModel):
@@ -51,7 +63,6 @@ class HistoryResponse(BaseModel):
     query_range: str
     data_points: List[HistoryDataPoint]
 
-
 # --- 2. FastAPI App Instance ---
 app = FastAPI(
     title="LEAFCLOUD API",
@@ -59,14 +70,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
 # --- 3. API Endpoints ---
-
 @app.get(
     "/api/v1/readings/latest",
     response_model=LatestReadingResponse,
     summary="Get Latest Sensor Reading"
 )
+
 async def get_latest_reading():
     """
     Retrieves the single most recent reading from the hydroponics system.
@@ -98,7 +108,6 @@ async def get_latest_reading():
       "recommendation": "Nitrogen is low. Consider adding 10ml of 'Grow' solution."
     }
     return dummy_data
-
 
 @app.get(
     "/api/v1/readings/history",
@@ -153,7 +162,6 @@ async def get_history(range: str = "7d"):
       ]
     }
     return dummy_data
-
 
 # This is for running the file directly
 if __name__ == "__main__":
