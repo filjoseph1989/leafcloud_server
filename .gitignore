@@ -24,3 +24,6 @@ dist/
 
 # Uvicorn/Starlette temp files
 .webassets-cache
+
+# Environment variables
+.env
