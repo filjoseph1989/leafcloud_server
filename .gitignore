@@ -28,3 +28,9 @@ dist/
 # Environment variables
 .env
 docs
+
+# Generated Artifacts
+images/
+mock_images/
+*.h5
+leafcloud-queries.dbcnb

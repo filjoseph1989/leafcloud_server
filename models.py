@@ -1,73 +1,73 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from database import Base
 
-class SensorData(Base):
+class Experiment(Base):
     """
-    Stores time-series data from environmental sensors (pH, EC, temperature).
-    Linked by a device_id (e.g., 'bucket_1') and timestamp.
+    Batch Tracker: Organizes data by crop cycle (e.g., "Lettuce Batch Oct 2026").
     """
-    __tablename__ = "sensor_data"
+    __tablename__ = "experiments"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, index=True)
-    device_id = Column(String, index=True)
+    bucket_label = Column(String(50))
+    start_date = Column(Date)
 
-    ec = Column(Float)
+    # Relationship
+    readings = relationship("DailyReading", back_populates="experiment")
+
+class DailyReading(Base):
+    """
+    Input Log: Merges image and sensor data.
+    Stores the photo + EC + pH the farmer captures.
+    """
+    __tablename__ = "daily_readings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bucket_id = Column(Integer, ForeignKey("experiments.id"))
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+    image_path = Column(String(255))
     ph = Column(Float)
-    temp_c = Column(Float)
-    # ambient_temp = Column(Float, nullable=True) # From DHT22
-    # ambient_humid = Column(Float, nullable=True) # From DHT22
+    ec = Column(Float)
+    water_temp = Column(Float)
 
-class ImageData(Base):
+    # Links to Lab Results (if taken)
+    sample_bottle_label = Column(String(50), nullable=True)
+
+    # Relationships
+    experiment = relationship("Experiment", back_populates="readings")
+    prediction = relationship("NPKPrediction", back_populates="daily_reading", uselist=False)
+
+class LabResult(Base):
     """
-    Stores metadata for captured leaf images.
-    The actual image is stored on disk/cloud, here we store the path/URL.
+    Answer Key: The 'Ground Truth' from the Lab.
+    Linked to the physical Bottle Label.
     """
-    __tablename__ = "image_data"
+    __tablename__ = "lab_results"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, index=True)
-    device_id = Column(String, index=True)
-    
-    image_path = Column(String) # URL or file path
-    
-    # Relationship: One image can have one prediction (or many, but usually one active)
-    predictions = relationship("NPKPrediction", back_populates="image")
+    sample_bottle_label = Column(String(50), unique=True, index=True) # e.g. "BucketA-Day5"
+
+    n_val = Column(Float)
+    p_val = Column(Float)
+    k_val = Column(Float)
 
 class NPKPrediction(Base):
     """
-    Stores NPK values predicted by the CNN model.
-    Linked to the specific image it was derived from.
+    AI Result: Stores the NPK values calculated by the CNN.
     """
     __tablename__ = "npk_predictions"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, index=True)
-    
-    # Foreign Key to ImageData
-    image_id = Column(Integer, ForeignKey("image_data.id"))
-    image = relationship("ImageData", back_populates="predictions")
-    
-    n_ppm = Column(Float)
-    p_ppm = Column(Float)
-    k_ppm = Column(Float)
-    
-    confidence = Column(Float, nullable=True) # Model confidence score
+    daily_reading_id = Column(Integer, ForeignKey("daily_readings.id"))
 
-class GroundTruth(Base):
-    """
-    Stores the 'Actual' NPK values obtained from Laboratory Analysis.
-    Crucial for training the regression model (Calibration/Validation).
-    """
-    __tablename__ = "ground_truth"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, index=True) # Date of sample collection
-    device_id = Column(String, index=True)   # Which bucket/setup
-    
-    n_actual = Column(Float)
-    p_actual = Column(Float)
-    k_actual = Column(Float)
-    
-    lab_report_ref = Column(String, nullable=True) # Optional: Reference to physical lab report ID
+    predicted_n = Column(Float)
+    predicted_p = Column(Float)
+    predicted_k = Column(Float)
+
+    confidence_score = Column(Float, nullable=True)
+    prediction_date = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship
+    daily_reading = relationship("DailyReading", back_populates="prediction")

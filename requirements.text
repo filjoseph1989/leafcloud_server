@@ -1,5 +1,22 @@
-fastapi 
+# Web Framework & Server
+fastapi
 uvicorn[standard]
+python-multipart
+
+# Database
 SQLAlchemy
 alembic
 psycopg2-binary
+python-dotenv
+
+# Data Processing & ML
+numpy
+pandas
+opencv-python
+Pillow
+
+# AI Model Training (Requires Python <= 3.12 for stable support)
+# tensorflow
+
+# Utilities
+requests

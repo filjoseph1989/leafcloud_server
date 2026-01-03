@@ -1,163 +1,162 @@
-import uvicorn
-from fastapi import FastAPI
-from pydantic import BaseModel
-from enum import Enum
-from typing import List
+import os
+import shutil
 from datetime import datetime
+from fastapi import FastAPI, UploadFile, Form, Depends, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+import numpy as np
+from PIL import Image
 
-# --- 1. Pydantic Models (Data Schemas) ---
-# These models define the *exact* structure of your JSON responses.
-# They are now aligned with the DB redesign (SensorData, ImageData, NPKPrediction).
+from database import get_db, engine, Base
+import models
 
-# Sub-model for 'sensors' (Matches 'sensor_data' table)
-class SensorData(BaseModel):
-    ec: float
-    ph: float
-    temp_c: float
+# Ensure tables exist
+Base.metadata.create_all(bind=engine)
 
-# Sub-model for 'predictions' (Matches 'npk_predictions' table)
-class PredictionData(BaseModel):
-    n_ppm: float
-    p_ppm: float
-    k_ppm: float
+# Load AI Brain (Mock loader for now if file doesn't exist)
+try:
+    import tensorflow as tf
+    model = tf.keras.models.load_model("leafcloud_mobilenetv2_model.h5")
+    print("🧠 AI Model loaded successfully.")
+except Exception as e:
+    print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
+    model = None
 
-# Define allowed status values using an Enum for robustness
-class NutrientStatus(str, Enum):
-    ok = "ok"
-    low = "low"
-    high = "high"
-
-class OverallStatus(str, Enum):
-    ok = "ok"
-    warning = "warning"
-    danger = "danger"
-
-# Sub-model for 'status' (Computed on the fly, not stored directly)
-class StatusData(BaseModel):
-    n_status: NutrientStatus
-    p_status: NutrientStatus
-    k_status: NutrientStatus
-    overall_status: OverallStatus
-
-# Main model for latest_response.json
-# Aggregates data from SensorData, ImageData, and NPKPrediction tables.
-class LatestReadingResponse(BaseModel):
-    timestamp: datetime
-    device_id: str          # Renamed from plant_id to match 'sensor_data.device_id'
-    lettuce_image_url: str  # From 'image_data.image_path'
-    sensors: SensorData
-    predictions: PredictionData
-    status: StatusData
-    recommendation: str
-
-# Model for one data point in history_response.json
-class HistoryDataPoint(BaseModel):
-    timestamp: datetime
-    n_ppm: float
-    p_ppm: float
-    k_ppm: float
-    ec: float
-    ph: float
-
-# Main model for history_response.json
-class HistoryResponse(BaseModel):
-    query_range: str
-    data_points: List[HistoryDataPoint]
-
-# --- 2. FastAPI App Instance ---
 app = FastAPI(
     title="LEAFCLOUD API",
-    description="API for the LEAFCLOUD Hydroponics Monitoring System.",
-    version="1.1.0"
+    description="Production Backend for LEAFCLOUD System",
+    version="2.0.0"
 )
 
-# --- 3. API Endpoints ---
-@app.get(
-    "/api/v1/readings/latest",
-    response_model=LatestReadingResponse,
-    summary="Get Latest Sensor Reading"
-)
-async def get_latest_reading():
-    """
-    Retrieves the single most recent reading from the hydroponics system.
-    This aggregates data from the SensorData, ImageData, and NPKPrediction tables.
-    """
-    # --- Dummy Data (Simulating a DB Fetch) ---
-    dummy_data = {
-      "timestamp": "2025-11-16T10:30:01Z",
-      "device_id": "bucket_1", # Updated to device_id
-      "lettuce_image_url": "https://placehold.co/600x400/5B9C4A/FFFFFF?text=Lettuce+Leaf\n(img_12345.jpg)",
-      "sensors": {
-        "ec": 790.5,
-        "ph": 6.4,
-        "temp_c": 25.1
-      },
-      "predictions": {
-        "n_ppm": 139.4,
-        "p_ppm": 46.5,
-        "k_ppm": 185.8
-      },
-      "status": {
-        "n_status": "low",
-        "p_status": "ok",
-        "k_status": "ok",
-        "overall_status": "warning"
-      },
-      "recommendation": "Nitrogen is low. Consider adding 10ml of 'Grow' solution."
-    }
-    return dummy_data
+# --- 2. ENDPOINT FOR IOT (Raspberry Pi uses this) ---
+@app.post("/iot/upload_data/")
+async def upload_from_iot(
+    image: UploadFile,
+    ph: float = Form(...),
+    ec: float = Form(...),
+    temp: float = Form(...),
+    bucket_label: str = Form("unknown"), # Added to link to experiment
+    db: Session = Depends(get_db)
+):
+    # A. Save Image
+    os.makedirs("images", exist_ok=True)
+    filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{image.filename}"
+    file_path = os.path.join("images", filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
 
-@app.get(
-    "/api/v1/readings/history",
-    response_model=HistoryResponse,
-    summary="Get Historical Sensor Readings"
-)
-async def get_history(range: str = "7d"):
-    """
-    Retrieves a list of historical readings for a specified time range.
-    Used to populate charts in the app.    
-    Query Parameters:
-    - **range**: The time range (e.g., '24h', '7d', '30d').
-    """
-    # --- Dummy Data ---
-    dummy_data = {
-      "query_range": range,
-      "data_points": [
-        {
-          "timestamp": "2025-11-16T10:30:00Z",
-          "n_ppm": 139.4,
-          "p_ppm": 46.5,
-          "k_ppm": 185.8,
-          "ec": 790.5,
-          "ph": 6.4
+    # B. Find or Create Experiment (Simplified logic)
+    # In a real app, you might look up by bucket_label
+    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).first()
+    if not experiment:
+        experiment = models.Experiment(bucket_label=bucket_label, start_date=datetime.now().date())
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
+
+    # C. Save Sensor Data
+    reading = models.DailyReading(
+        bucket_id=experiment.id,
+        image_path=file_path,
+        ph=ph,
+        ec=ec,
+        water_temp=temp
+    )
+    db.add(reading)
+    db.commit()
+    db.refresh(reading)
+
+    # D. Run AI (Server-Side Processing)
+    predicted_n, predicted_p, predicted_k = 0.0, 0.0, 0.0
+    
+    if model:
+        try:
+            img = Image.open(file_path).convert('RGB').resize((224, 224))
+            img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
+            prediction = model.predict(img_array)
+            predicted_n, predicted_p, predicted_k = prediction[0]
+        except Exception as e:
+            print(f"Prediction Error: {e}")
+    else:
+        # Dummy fallback if model isn't loaded
+        predicted_n, predicted_p, predicted_k = 150.0, 50.0, 200.0
+
+    # E. Save Prediction
+    pred_record = models.NPKPrediction(
+        daily_reading_id=reading.id,
+        predicted_n=float(predicted_n),
+        predicted_p=float(predicted_p),
+        predicted_k=float(predicted_k)
+    )
+    db.add(pred_record)
+    db.commit()
+
+    return {"status": "success", "message": "Data processed and NPK calculated"}
+
+# --- 3. ENDPOINT FOR MOBILE APP (Android uses this) ---
+@app.get("/app/latest_status/")
+def get_dashboard_data(db: Session = Depends(get_db)):
+    # The App only ASKS for data (GET), it doesn't send data.
+    latest = db.query(models.NPKPrediction)\
+        .join(models.DailyReading)\
+        .order_by(desc(models.NPKPrediction.prediction_date))\
+        .first()
+
+    if not latest:
+        return {"error": "No data available yet"}
+
+    # Get the sensor data linked to this prediction
+    # Accessing via relationship
+    reading = latest.daily_reading
+
+    return {
+        "timestamp": latest.prediction_date,
+        "sensors": {
+            "ph": reading.ph,
+            "ec": reading.ec,
+            "temp": reading.water_temp
         },
-        {
-          "timestamp": "2025-11-16T09:30:00Z",
-          "n_ppm": 141.2,
-          "p_ppm": 47.1,
-          "k_ppm": 187.1,
-          "ec": 800.0,
-          "ph": 6.3
+        "npk_levels": {
+            "Nitrogen": latest.predicted_n,
+            "Phosphorus": latest.predicted_p,
+            "Potassium": latest.predicted_k
         },
-        {
-          "timestamp": "2025-11-16T08:30:00Z",
-          "n_ppm": 142.1,
-          "p_ppm": 47.2,
-          "k_ppm": 188.0,
-          "ec": 805.0,
-          "ph": 6.3
-        },
-        {
-          "timestamp": "2025-11-16T07:30:00Z",
-          "n_ppm": 145.0,
-          "p_ppm": 48.0,
-          "k_ppm": 190.0,
-          "ec": 810.0,
-          "ph": 6.2
-        }
-      ]
+        "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected"
     }
-    return dummy_data
+
+@app.get("/app/history/")
+def get_history(limit: int = 30, db: Session = Depends(get_db)):
+    """
+    Retrieves historical data for charts.
+    Returns the last 'limit' readings, ordered chronologically.
+    """
+    # Join DailyReading (Sensors) with NPKPrediction (AI)
+    # We select records that have both sensor data and a prediction
+    history = db.query(models.DailyReading, models.NPKPrediction)\
+        .join(models.NPKPrediction, models.DailyReading.id == models.NPKPrediction.daily_reading_id)\
+        .order_by(models.DailyReading.timestamp.desc())\
+        .limit(limit)\
+        .all()
+
+    # The query returns a list of tuples: (DailyReading, NPKPrediction)
+    # We need to reverse it to be chronological (oldest -> newest) for charts
+    history = history[::-1]
+
+    response_data = []
+    for reading, prediction in history:
+        response_data.append({
+            "timestamp": reading.timestamp,
+            "ph": reading.ph,
+            "ec": reading.ec,
+            "temp": reading.water_temp,
+            "n_ppm": prediction.predicted_n,
+            "p_ppm": prediction.predicted_p,
+            "k_ppm": prediction.predicted_k
+        })
+
+    return response_data
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
