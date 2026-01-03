@@ -7,15 +7,15 @@ from datetime import datetime
 
 # --- 1. Pydantic Models (Data Schemas) ---
 # These models define the *exact* structure of your JSON responses.
-# FastAPI uses them to validate your data and auto-generate documentation.
+# They are now aligned with the DB redesign (SensorData, ImageData, NPKPrediction).
 
-# Sub-model for 'sensors' in latest_response.json
+# Sub-model for 'sensors' (Matches 'sensor_data' table)
 class SensorData(BaseModel):
     ec: float
     ph: float
     temp_c: float
 
-# Sub-model for 'predictions' in latest_response.json
+# Sub-model for 'predictions' (Matches 'npk_predictions' table)
 class PredictionData(BaseModel):
     n_ppm: float
     p_ppm: float
@@ -32,7 +32,7 @@ class OverallStatus(str, Enum):
     warning = "warning"
     danger = "danger"
 
-# Sub-model for 'status' in latest_response.json
+# Sub-model for 'status' (Computed on the fly, not stored directly)
 class StatusData(BaseModel):
     n_status: NutrientStatus
     p_status: NutrientStatus
@@ -40,10 +40,11 @@ class StatusData(BaseModel):
     overall_status: OverallStatus
 
 # Main model for latest_response.json
+# Aggregates data from SensorData, ImageData, and NPKPrediction tables.
 class LatestReadingResponse(BaseModel):
     timestamp: datetime
-    plant_id: str
-    lettuce_image_url: str
+    device_id: str          # Renamed from plant_id to match 'sensor_data.device_id'
+    lettuce_image_url: str  # From 'image_data.image_path'
     sensors: SensorData
     predictions: PredictionData
     status: StatusData
@@ -67,7 +68,7 @@ class HistoryResponse(BaseModel):
 app = FastAPI(
     title="LEAFCLOUD API",
     description="API for the LEAFCLOUD Hydroponics Monitoring System.",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # --- 3. API Endpoints ---
@@ -76,18 +77,15 @@ app = FastAPI(
     response_model=LatestReadingResponse,
     summary="Get Latest Sensor Reading"
 )
-
 async def get_latest_reading():
     """
     Retrieves the single most recent reading from the hydroponics system.
-    This provides all data needed for the main dashboard.
+    This aggregates data from the SensorData, ImageData, and NPKPrediction tables.
     """
-    # --- This is your "dummy" data ---
-    # In the future, you will replace this by fetching data
-    # from your database (e.g., Firestore or PostgreSQL).
+    # --- Dummy Data (Simulating a DB Fetch) ---
     dummy_data = {
       "timestamp": "2025-11-16T10:30:01Z",
-      "plant_id": "bucket_1_lettuce",
+      "device_id": "bucket_1", # Updated to device_id
       "lettuce_image_url": "https://placehold.co/600x400/5B9C4A/FFFFFF?text=Lettuce+Leaf\n(img_12345.jpg)",
       "sensors": {
         "ec": 790.5,
@@ -117,15 +115,13 @@ async def get_latest_reading():
 async def get_history(range: str = "7d"):
     """
     Retrieves a list of historical readings for a specified time range.
-    Used to populate charts in the app.
-    
+    Used to populate charts in the app.    
     Query Parameters:
     - **range**: The time range (e.g., '24h', '7d', '30d').
     """
-    # --- This is your "dummy" data ---
-    # In the future, you will query your database based on the 'range'
+    # --- Dummy Data ---
     dummy_data = {
-      "query_range": range, # Use the 'range' parameter from the URL
+      "query_range": range,
       "data_points": [
         {
           "timestamp": "2025-11-16T10:30:00Z",
@@ -163,6 +159,5 @@ async def get_history(range: str = "7d"):
     }
     return dummy_data
 
-# This is for running the file directly
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

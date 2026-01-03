@@ -27,3 +27,4 @@ dist/
 
 # Environment variables
 .env
+docs
