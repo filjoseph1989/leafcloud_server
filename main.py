@@ -28,6 +28,31 @@ app = FastAPI(
     version="2.0.0"
 )
 
+def generate_recommendation(n, p, k, ph, ec):
+    """
+    Rule-based engine to convert sensor/AI data into actionable advice.
+    """
+    # Priority 1: pH Lockout (Critical)
+    if ph < 5.5 or ph > 7.0:
+        return "pH is out of range. Adjust to 5.8-6.5 immediately. Do not add fertilizer yet."
+
+    # Priority 2: Nutrient Deficiency (Based on AI NPK)
+    if n < 100:
+        return "Nitrogen levels low. Add Calcium Nitrate to reservoir."
+    if p < 30:
+        return "Phosphorus levels low. Add Monopotassium Phosphate (MKP)."
+    if k < 150:
+        return "Potassium levels low. Add Potassium Sulfate."
+
+    # Priority 3: General EC Warning
+    if ec < 0.8: # Assuming EC is in mS/cm (800 µS/cm)
+        return "Solution is too weak. Add balanced nutrient mix."
+    if ec > 2.5: # 2500 µS/cm
+        return "Nutrient burn risk. Add fresh water to dilute."
+
+    # Priority 4: Optimal
+    return "System healthy. No action required."
+
 # --- 2. ENDPOINT FOR IOT (Raspberry Pi uses this) ---
 @app.post("/iot/upload_data/")
 async def upload_from_iot(
@@ -110,8 +135,19 @@ def get_dashboard_data(db: Session = Depends(get_db)):
     # Accessing via relationship
     reading = latest.daily_reading
 
+    # Generate actionable advice
+    recommendation = generate_recommendation(
+        latest.predicted_n, 
+        latest.predicted_p, 
+        latest.predicted_k, 
+        reading.ph, 
+        reading.ec
+    )
+
     return {
         "timestamp": latest.prediction_date,
+        "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
+        "recommendation": recommendation,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
@@ -121,8 +157,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
             "Nitrogen": latest.predicted_n,
             "Phosphorus": latest.predicted_p,
             "Potassium": latest.predicted_k
-        },
-        "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected"
+        }
     }
 
 @app.get("/app/history/")
