@@ -10,9 +10,15 @@ from PIL import Image
 
 from database import get_db, engine, Base
 import models
+from pydantic import BaseModel
 
 # Ensure tables exist
 Base.metadata.create_all(bind=engine)
+
+# --- Auth Models ---
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
 try:
@@ -32,6 +38,23 @@ app = FastAPI(
 # Ensure images directory exists and mount it to serve files via HTTP
 os.makedirs("images", exist_ok=True)
 app.mount("/images", StaticFiles(directory="images"), name="images")
+
+# --- 1. AUTHENTICATION ENDPOINT ---
+@app.post("/auth/login")
+def login(request: LoginRequest):
+    """
+    Simple authentication endpoint for the mobile app prototype.
+    Currently uses hardcoded credentials.
+    """
+    # In a real app, verify against a Users table with hashed passwords
+    if request.email == "admin@leafcloud.com" and request.password == "admin":
+        return {
+            "status": "success",
+            "token": "demo-access-token-xyz-789", 
+            "message": "Login successful"
+        }
+    
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 def generate_recommendation(n, p, k, ph, ec):
     """
