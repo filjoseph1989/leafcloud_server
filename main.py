@@ -2,6 +2,7 @@ import os
 import shutil
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, Form, Depends, HTTPException
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import numpy as np
@@ -27,6 +28,10 @@ app = FastAPI(
     description="Production Backend for LEAFCLOUD System",
     version="2.0.0"
 )
+
+# Ensure images directory exists and mount it to serve files via HTTP
+os.makedirs("images", exist_ok=True)
+app.mount("/images", StaticFiles(directory="images"), name="images")
 
 def generate_recommendation(n, p, k, ph, ec):
     """
@@ -67,7 +72,7 @@ async def upload_from_iot(
     os.makedirs("images", exist_ok=True)
     filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{image.filename}"
     file_path = os.path.join("images", filename)
-    
+
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
 
@@ -94,7 +99,7 @@ async def upload_from_iot(
 
     # D. Run AI (Server-Side Processing)
     predicted_n, predicted_p, predicted_k = 0.0, 0.0, 0.0
-    
+
     if model:
         try:
             img = Image.open(file_path).convert('RGB').resize((224, 224))
@@ -137,10 +142,10 @@ def get_dashboard_data(db: Session = Depends(get_db)):
 
     # Generate actionable advice
     recommendation = generate_recommendation(
-        latest.predicted_n, 
-        latest.predicted_p, 
-        latest.predicted_k, 
-        reading.ph, 
+        latest.predicted_n,
+        latest.predicted_p,
+        latest.predicted_k,
+        reading.ph,
         reading.ec
     )
 
@@ -148,6 +153,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "timestamp": latest.prediction_date,
         "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
         "recommendation": recommendation,
+        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
