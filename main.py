@@ -56,7 +56,7 @@ def generate_recommendation(n, p, k, ph, ec):
         return "Nutrient burn risk. Add fresh water to dilute."
 
     # Priority 4: Optimal
-    return "System healthy. No action required."
+    return "Lettuce growth is optimal. No action required."
 
 # --- 2. ENDPOINT FOR IOT (Raspberry Pi uses this) ---
 @app.post("/iot/upload_data/")
@@ -197,6 +197,67 @@ def get_history(limit: int = 30, db: Session = Depends(get_db)):
         })
 
     return response_data
+
+@app.get("/app/alerts/")
+def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
+    """
+    Retrieves a list of proactive alerts based on historical data.
+    Used to populate the 'Notifications' screen in the app.
+    """
+    # 1. Fetch recent history
+    history = db.query(models.DailyReading, models.NPKPrediction)\
+        .join(models.NPKPrediction, models.DailyReading.id == models.NPKPrediction.daily_reading_id)\
+        .order_by(models.DailyReading.timestamp.desc())\
+        .limit(limit)\
+        .all()
+
+    alerts = []
+
+    # 2. Scan for issues
+    for reading, prediction in history:
+        # Check pH (Critical)
+        if reading.ph < 5.5 or reading.ph > 7.0:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "critical",
+                "message": f"pH Lockout detected ({reading.ph}). Nutrients unavailable."
+            })
+        
+        # Check EC (Warning)
+        if reading.ec < 0.8:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "warning",
+                "message": f"Nutrient solution too weak (EC {reading.ec})."
+            })
+        elif reading.ec > 2.5:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "critical",
+                "message": f"Nutrient burn risk! EC is extremely high ({reading.ec})."
+            })
+
+        # Check NPK (Deficiencies)
+        if prediction.predicted_n < 100:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "warning",
+                "message": "Nitrogen level is low."
+            })
+        if prediction.predicted_p < 30:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "warning",
+                "message": "Phosphorus deficiency likely."
+            })
+        if prediction.predicted_k < 150:
+            alerts.append({
+                "timestamp": reading.timestamp,
+                "severity": "warning",
+                "message": "Potassium level is below optimal."
+            })
+
+    return alerts
 
 if __name__ == "__main__":
     import uvicorn
