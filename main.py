@@ -50,10 +50,10 @@ def login(request: LoginRequest):
     if request.email == "admin@leafcloud.com" and request.password == "admin":
         return {
             "status": "success",
-            "token": "demo-access-token-xyz-789", 
+            "token": "demo-access-token-xyz-789",
             "message": "Login successful"
         }
-    
+
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 def generate_recommendation(n, p, k, ph, ec):
@@ -245,7 +245,7 @@ def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
                 "severity": "critical",
                 "message": f"pH Lockout detected ({reading.ph}). Nutrients unavailable."
             })
-        
+
         # Check EC (Warning)
         if reading.ec < 0.8:
             alerts.append({
