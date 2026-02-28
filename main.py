@@ -7,13 +7,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import numpy as np
 from PIL import Image
+from dotenv import load_dotenv
 
 from database import get_db, engine, Base
 import models
 from pydantic import BaseModel
 
+load_dotenv()
+
 # Ensure tables exist
 Base.metadata.create_all(bind=engine)
+
 
 # --- Auth Models ---
 class LoginRequest(BaseModel):

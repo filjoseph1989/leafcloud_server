@@ -2,12 +2,24 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-# Load the database URL from an environment variable for security and flexibility.
-# The default value is for a local setup with user 'fil' and no password.
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://fil:@localhost/leafcloud")
+load_dotenv()
 
-engine = create_engine(DATABASE_URL)
+# The database URL is configured using the environment variables
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Fallback to individual variables if DATABASE_URL is not set
+if not SQLALCHEMY_DATABASE_URL:
+    DB_USER = os.getenv("DB_USER", "user")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_PORT = os.getenv("DB_PORT", "5432")
+    DB_NAME = os.getenv("DB_NAME", "leafcloud")
+    SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
