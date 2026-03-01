@@ -2,6 +2,7 @@ import os
 import shutil
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, Form, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -120,6 +121,38 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     db.refresh(new_reading)
 
     return {"status": "success", "data": data}
+
+# --- 3. VIDEO STREAMING PROXY ---
+@app.get("/video_feed")
+async def video_feed():
+    """
+    Proxies MJPEG stream from the source (e.g., Raspberry Pi) to the client.
+    """
+    import cv2
+    source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
+    
+    def generate():
+        cap = cv2.VideoCapture(source_url)
+        if not cap.isOpened():
+            print(f"❌ Could not open video source: {source_url}")
+            return
+
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
+            
+            # Encode frame as JPEG
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if not ret:
+                continue
+                
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
+        cap.release()
+
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.post("/iot/upload_data/")
 async def upload_from_iot(
