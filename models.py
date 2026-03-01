@@ -31,6 +31,7 @@ class DailyReading(Base):
     ph = Column(Float)
     ec = Column(Float)
     water_temp = Column(Float)
+    status = Column(String(50), nullable=True, default="active")
 
     # Links to Lab Results (if taken)
     sample_bottle_label = Column(String(50), nullable=True)
