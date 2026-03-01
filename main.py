@@ -129,27 +129,31 @@ async def video_feed():
     Proxies MJPEG stream from the source (e.g., Raspberry Pi) to the client.
     """
     import cv2
+    import time
     source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
-    
+
     def generate():
         cap = cv2.VideoCapture(source_url)
-        if not cap.isOpened():
-            print(f"❌ Could not open video source: {source_url}")
-            return
 
         while True:
             success, frame = cap.read()
             if not success:
-                break
-            
+                # Fallback: Generate a "NO SIGNAL" placeholder if stream is missing
+                frame = np.zeros((480, 640, 3), np.uint8)
+                cv2.putText(frame, "NO SIGNAL", (220, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.putText(frame, f"Waiting for {source_url}...", (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+                # Sleep briefly to avoid high CPU usage while waiting
+                time.sleep(1.0)
+
             # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', frame)
             if not ret:
                 continue
-                
+
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        
+
         cap.release()
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
