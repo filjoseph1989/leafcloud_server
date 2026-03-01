@@ -24,6 +24,13 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class SensorData(BaseModel):
+    temperature: float
+    ec: float
+    ph: float
+    status: str = "active"
+    timestamp: datetime = None
+
 # Load AI Brain (Mock loader for now if file doesn't exist)
 try:
     import tensorflow as tf

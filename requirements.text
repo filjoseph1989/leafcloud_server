@@ -20,3 +20,5 @@ Pillow
 
 # Utilities
 requests
+pytest
+pytest-cov
