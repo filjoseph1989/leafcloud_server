@@ -93,6 +93,34 @@ def generate_recommendation(n, p, k, ph, ec):
     return "Lettuce growth is optimal. No action required."
 
 # --- 2. ENDPOINT FOR IOT (Raspberry Pi uses this) ---
+@app.post("/iot/sensor_data/", status_code=201)
+async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
+    """
+    Receives JSON sensor data from the Raspberry Pi and stores it in the database.
+    """
+    # For now, we associate with a default experiment or create one if none exists
+    # In production, the Pi should probably identify the experiment/bucket
+    experiment = db.query(models.Experiment).first()
+    if not experiment:
+        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
+
+    new_reading = models.DailyReading(
+        bucket_id=experiment.id,
+        ph=data.ph,
+        ec=data.ec,
+        water_temp=data.temperature,
+        status=data.status,
+        timestamp=data.timestamp or datetime.now()
+    )
+    db.add(new_reading)
+    db.commit()
+    db.refresh(new_reading)
+
+    return {"status": "success", "data": data}
+
 @app.post("/iot/upload_data/")
 async def upload_from_iot(
     image: UploadFile,
