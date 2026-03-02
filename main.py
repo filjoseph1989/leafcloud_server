@@ -46,6 +46,7 @@ class SensorData(BaseModel):
     ec: float
     ph: float
     status: str = "active"
+    bucket_id: Optional[str] = None
     timestamp: datetime = None
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
@@ -142,29 +143,32 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     Receives JSON sensor data from the Raspberry Pi and stores it in the database.
     """
     print(f"📥 [create_sensor_data] Received payload: {data}")
+    
+    # Determine bucket label: priority to payload, then global state
+    final_bucket_label = data.bucket_id or active_bucket_id
+    print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
+
     # For now, we associate with a default experiment or create one if none exists
-    # In production, the Pi should probably identify the experiment/bucket
-    # experiment = db.query(models.Experiment).first()
-    # if not experiment:
-    #     experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
-    #     db.add(experiment)
-    #     db.commit()
-    #     db.refresh(experiment)
+    experiment = db.query(models.Experiment).first()
+    if not experiment:
+        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
 
-    # new_reading = models.DailyReading(
-    #     bucket_id=experiment.id,
-    #     ph=data.ph,
-    #     ec=data.ec,
-    #     water_temp=data.temperature,
-    #     status=data.status,
-    #     timestamp=data.timestamp or datetime.now()
-    # )
-    # db.add(new_reading)
-    # db.commit()
-    # db.refresh(new_reading)
-    # print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id}")
-
-    print(f"wala lang mao na ni")
+    new_reading = models.DailyReading(
+        bucket_id=experiment.id,
+        ph=data.ph,
+        ec=data.ec,
+        water_temp=data.temperature,
+        status=data.status,
+        bucket_label=final_bucket_label,
+        timestamp=data.timestamp or datetime.now()
+    )
+    db.add(new_reading)
+    db.commit()
+    db.refresh(new_reading)
+    print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id} with bucket: {final_bucket_label}")
 
     return {"status": "success", "data": data}
 
