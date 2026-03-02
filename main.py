@@ -13,8 +13,24 @@ from dotenv import load_dotenv
 from database import get_db, engine, Base
 import models
 from pydantic import BaseModel
+from enum import Enum
+from typing import Optional
 
 load_dotenv()
+
+# --- Global State ---
+active_bucket_id: Optional[str] = None
+
+# --- Models & Enums ---
+class BucketLabel(str, Enum):
+    NPK = "NPK"
+    MICRO = "Micro"
+    MIX = "Mix"
+    WATER = "Water"
+    STOP = "STOP"
+
+class ActiveBucketRequest(BaseModel):
+    bucket_id: BucketLabel
 
 # Ensure tables exist
 Base.metadata.create_all(bind=engine)
@@ -50,6 +66,32 @@ app = FastAPI(
 # Ensure images directory exists and mount it to serve files via HTTP
 os.makedirs("images", exist_ok=True)
 app.mount("/images", StaticFiles(directory="images"), name="images")
+
+# --- CONTROL ENDPOINTS ---
+@app.post("/control/active-bucket")
+def set_active_bucket(request: ActiveBucketRequest):
+    """
+    Updates the global active_bucket_id based on the provided label.
+    'STOP' sets the ID back to None.
+    """
+    global active_bucket_id
+    if request.bucket_id == BucketLabel.STOP:
+        active_bucket_id = None
+    else:
+        active_bucket_id = request.bucket_id.value
+    
+    return {
+        "status": "success",
+        "active_bucket_id": active_bucket_id,
+        "message": f"Active bucket set to {active_bucket_id}"
+    }
+
+@app.get("/control/current-status")
+def get_current_status():
+    """
+    Returns the current active_bucket_id.
+    """
+    return {"active_bucket_id": active_bucket_id}
 
 # --- 1. AUTHENTICATION ENDPOINT ---
 @app.post("/auth/login")
@@ -99,26 +141,30 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
     Receives JSON sensor data from the Raspberry Pi and stores it in the database.
     """
+    print(f"📥 [create_sensor_data] Received payload: {data}")
     # For now, we associate with a default experiment or create one if none exists
     # In production, the Pi should probably identify the experiment/bucket
-    experiment = db.query(models.Experiment).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
+    # experiment = db.query(models.Experiment).first()
+    # if not experiment:
+    #     experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
+    #     db.add(experiment)
+    #     db.commit()
+    #     db.refresh(experiment)
 
-    new_reading = models.DailyReading(
-        bucket_id=experiment.id,
-        ph=data.ph,
-        ec=data.ec,
-        water_temp=data.temperature,
-        status=data.status,
-        timestamp=data.timestamp or datetime.now()
-    )
-    db.add(new_reading)
-    db.commit()
-    db.refresh(new_reading)
+    # new_reading = models.DailyReading(
+    #     bucket_id=experiment.id,
+    #     ph=data.ph,
+    #     ec=data.ec,
+    #     water_temp=data.temperature,
+    #     status=data.status,
+    #     timestamp=data.timestamp or datetime.now()
+    # )
+    # db.add(new_reading)
+    # db.commit()
+    # db.refresh(new_reading)
+    # print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id}")
+
+    print(f"wala lang mao na ni")
 
     return {"status": "success", "data": data}
 
