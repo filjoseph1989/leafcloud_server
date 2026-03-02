@@ -52,12 +52,12 @@ def test_sensor_data_with_explicit_bucket(client):
     """
     Verifies that explicit bucket_id in payload is prioritized.
     """
-    main.active_bucket_id = "GlobalBucket"
+    main.active_bucket_id = "Mix"
     payload = {
         "temperature": 25.0,
         "ec": 1.0,
         "ph": 6.0,
-        "bucket_id": "ExplicitBucket"
+        "bucket_id": "NPK"
     }
     response = client.post("/iot/sensor_data/", json=payload)
     assert response.status_code == 201
@@ -66,14 +66,14 @@ def test_sensor_data_with_explicit_bucket(client):
     db = TestingSessionLocal()
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
     assert reading is not None
-    assert reading.bucket_label == "ExplicitBucket"
+    assert reading.bucket_label == "NPK"
     db.close()
 
 def test_sensor_data_with_global_fallback(client):
     """
     Verifies fallback to global active_bucket_id if missing in payload.
     """
-    main.active_bucket_id = "GlobalBucket"
+    main.active_bucket_id = "Water"
     payload = {
         "temperature": 22.0,
         "ec": 1.2,
@@ -87,7 +87,7 @@ def test_sensor_data_with_global_fallback(client):
     db = TestingSessionLocal()
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
     assert reading is not None
-    assert reading.bucket_label == "GlobalBucket"
+    assert reading.bucket_label == "Water"
     db.close()
 
 def test_sensor_data_with_no_bucket(client):

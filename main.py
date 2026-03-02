@@ -46,7 +46,7 @@ class SensorData(BaseModel):
     ec: float
     ph: float
     status: str = "active"
-    bucket_id: Optional[str] = None
+    bucket_id: Optional[BucketLabel] = None
     timestamp: datetime = None
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
@@ -74,6 +74,12 @@ def set_active_bucket(request: ActiveBucketRequest):
     """
     Updates the global active_bucket_id based on the provided label.
     'STOP' sets the ID back to None.
+
+    Args:
+        request: An ActiveBucketRequest containing the new bucket_id.
+
+    Returns:
+        A dictionary containing the status, updated active_bucket_id, and a message.
     """
     global active_bucket_id
     if request.bucket_id == BucketLabel.STOP:
@@ -91,6 +97,9 @@ def set_active_bucket(request: ActiveBucketRequest):
 def get_current_status():
     """
     Returns the current active_bucket_id.
+
+    Returns:
+        A dictionary containing the current active_bucket_id.
     """
     return {"active_bucket_id": active_bucket_id}
 
@@ -100,6 +109,15 @@ def login(request: LoginRequest):
     """
     Simple authentication endpoint for the mobile app prototype.
     Currently uses hardcoded credentials.
+
+    Args:
+        request: A LoginRequest containing email and password.
+
+    Returns:
+        A dictionary containing status, token, and message if successful.
+
+    Raises:
+        HTTPException: If credentials are invalid.
     """
     # In a real app, verify against a Users table with hashed passwords
     if request.email == "admin@leafcloud.com" and request.password == "admin":
@@ -114,6 +132,16 @@ def login(request: LoginRequest):
 def generate_recommendation(n, p, k, ph, ec):
     """
     Rule-based engine to convert sensor/AI data into actionable advice.
+
+    Args:
+        n: Nitrogen level.
+        p: Phosphorus level.
+        k: Potassium level.
+        ph: pH value.
+        ec: EC value.
+
+    Returns:
+        A string containing the recommendation.
     """
     # Priority 1: pH Lockout (Critical)
     if ph < 5.5 or ph > 7.0:
@@ -141,11 +169,18 @@ def generate_recommendation(n, p, k, ph, ec):
 async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
     Receives JSON sensor data from the Raspberry Pi and stores it in the database.
+
+    Args:
+        data: A SensorData object containing readings and optional bucket_id.
+        db: The database session.
+
+    Returns:
+        A dictionary confirming success and the processed data.
     """
     print(f"📥 [create_sensor_data] Received payload: {data}")
     
     # Determine bucket label: priority to payload, then global state
-    final_bucket_label = data.bucket_id or active_bucket_id
+    final_bucket_label = data.bucket_id.value if data.bucket_id else active_bucket_id
     print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
 
     # For now, we associate with a default experiment or create one if none exists
