@@ -54,8 +54,6 @@ def test_create_sensor_data_with_successful_capture(client):
         mock_capture.return_value = True
         
         response = client.post("/iot/sensor_data/", json=payload)
-        if response.status_code == 422:
-            print(response.json())
         assert response.status_code == 201
         data = response.json()
         assert "image_path" in data
