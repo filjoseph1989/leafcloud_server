@@ -18,8 +18,67 @@ from typing import Optional
 
 load_dotenv()
 
+import cv2
+import time
+import threading
+
 # --- Global State ---
 active_bucket_id: Optional[str] = None
+
+# --- Video Management ---
+class VideoManager:
+    """
+    Manages a single connection to the video stream and shares frames across the app.
+    """
+    def __init__(self):
+        self.source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._worker, daemon=True)
+            self.thread.start()
+            print(f"📹 Video Manager started for {self.source_url}")
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+            print("📹 Video Manager stopped.")
+
+    def _worker(self):
+        while self.running:
+            print(f"📹 Video Manager: Attempting to connect to {self.source_url}")
+            cap = cv2.VideoCapture(self.source_url)
+            if not cap.isOpened():
+                print(f"⚠️ Video Manager: Could not open {self.source_url}. Retrying in 2s...")
+                time.sleep(2.0)
+                continue
+
+            print(f"✅ Video Manager: Connected to {self.source_url}")
+            while self.running:
+                success, frame = cap.read()
+                if success:
+                    with self.lock:
+                        self.latest_frame = frame.copy()
+                else:
+                    print(f"⚠️ Video Manager: Lost stream from {self.source_url}. Reconnecting...")
+                    break
+            
+            cap.release()
+            time.sleep(1.0)
+
+    def get_latest_frame(self):
+        with self.lock:
+            if self.latest_frame is not None:
+                return self.latest_frame.copy()
+        return None
+
+video_manager = VideoManager()
 
 # --- Models & Enums ---
 class BucketLabel(str, Enum):
@@ -62,22 +121,39 @@ except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
     model = None
 
-app = FastAPI(
-    title="LEAFCLOUD API",
-    description="Production Backend for LEAFCLOUD System",
-    version="2.0.0"
-)
+app = FastAPI(title="LEAFCLOUD API")
 
-# Ensure images directory exists and mount it to serve files via HTTP
+# Serve static images for the app
 os.makedirs("images", exist_ok=True)
 app.mount("/images", StaticFiles(directory="images"), name="images")
 
-# --- CONTROL ENDPOINTS ---
+# --- Lifecycle Events ---
+@app.on_event("startup")
+async def startup_event():
+    video_manager.start()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    video_manager.stop()
+
+# --- 1. ENDPOINTS FOR CONTROL ---
+
+@app.get("/control/current-status")
+def get_current_status():
+    """
+    Returns the global active bucket and general system status.
+    The Raspberry Pi polls this to know which bucket is active.
+    """
+    return {
+        "active_bucket_id": active_bucket_id,
+        "server_time": datetime.now()
+    }
+
 @app.post("/control/active-bucket")
 def set_active_bucket(request: ActiveBucketRequest):
     """
-    Updates the global active_bucket_id based on the provided label.
-    'STOP' sets the ID back to None.
+    Updates the global active bucket ID.
+    Called by the Mobile App when the user switches nutrient buckets.
 
     Args:
         request: An ActiveBucketRequest containing the new bucket_id.
@@ -102,22 +178,10 @@ def set_active_bucket(request: ActiveBucketRequest):
         "message": f"Active bucket set to {active_bucket_id}"
     }
 
-@app.get("/control/current-status")
-def get_current_status():
-    """
-    Returns the current active_bucket_id.
-
-    Returns:
-        A dictionary containing the current active_bucket_id.
-    """
-    return {"active_bucket_id": active_bucket_id}
-
-# --- 1. AUTHENTICATION ENDPOINT ---
-@app.post("/auth/login")
+@app.post("/app/login/")
 def login(request: LoginRequest):
     """
-    Simple authentication endpoint for the mobile app prototype.
-    Currently uses hardcoded credentials.
+    Simple authentication endpoint for the mobile app.
 
     Args:
         request: A LoginRequest containing email and password.
@@ -194,12 +258,11 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
 
     # --- IMAGE CAPTURE ---
     # We capture the frame BEFORE saving to DB to ensure we have it
-    source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
     timestamp_str = (data.timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
     image_filename = f"reading_{final_bucket_label}_{timestamp_str}.jpg"
     image_path = os.path.join("images", image_filename)
 
-    if not capture_frame(source_url, image_path):
+    if not capture_frame("", image_path):
         raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
 
     # For now, we associate with a default experiment or create one if none exists
@@ -226,7 +289,7 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id} with bucket: {final_bucket_label}")
 
     return {
-        "status": "success", 
+        "status": "success",
         "data": data,
         "image_path": image_path,
         "reading_id": new_reading.id
@@ -235,81 +298,63 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
 # --- 3. VIDEO STREAMING PROXY ---
 def capture_frame(source_url: str, output_path: str) -> bool:
     """
-    Grabs a single frame from the video stream and saves it to a file.
+    Grabs a single frame from the shared VideoManager and saves it to a file.
     Returns True if successful, False otherwise.
     """
-    import cv2
-    import time
+    print(f"📸 Attempting to capture frame from shared VideoManager...")
+    frame = video_manager.get_latest_frame()
 
-    print(f"📸 Attempting to capture frame from {source_url}...")
-    cap = cv2.VideoCapture(source_url)
-    
-    if not cap.isOpened():
-        print(f"❌ Could not open video source: {source_url}")
-        return False
-
-    # Try to read a frame (give it a few attempts in case of delay)
-    success = False
-    frame = None
-    for i in range(5):
-        success, frame = cap.read()
-        if success:
-            break
-        time.sleep(0.1)
-
-    if success and frame is not None:
+    if frame is not None:
         cv2.imwrite(output_path, frame)
         print(f"✅ Frame saved to {output_path}")
-        cap.release()
         return True
     
-    print(f"❌ Failed to capture frame from {source_url}")
-    cap.release()
+    print(f"❌ Failed to capture frame: No recent frame in VideoManager.")
     return False
 
 @app.get("/video_feed")
 async def video_feed():
     """
-    Proxies MJPEG stream from the source (e.g., Raspberry Pi) to the client.
+    Proxies MJPEG stream from the shared VideoManager to the client.
     """
-    import cv2
-    import time
-    source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
-
     def generate():
-        print(f"📹 Connecting to video stream at {source_url}...")
-        cap = cv2.VideoCapture(source_url)
+        print(f"📹 Client connected to shared video_feed.")
         frame_count = 0
 
         while True:
-            success, frame = cap.read()
-            if not success:
-                # Log failure (throttled by the sleep below)
-                print(f"⚠️ No video signal from {source_url}")
+            frame = video_manager.get_latest_frame()
 
+            if frame is None:
                 # Fallback: Generate a "NO SIGNAL" placeholder if stream is missing
                 frame = np.zeros((480, 640, 3), np.uint8)
                 cv2.putText(frame, "NO SIGNAL", (220, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                cv2.putText(frame, f"Waiting for {source_url}...", (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                cv2.putText(frame, "Waiting for stream...", (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+                # Encode and yield placeholder
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
                 # Sleep briefly to avoid high CPU usage while waiting
                 time.sleep(1.0)
             else:
-                # Log success occasionally (every ~100 frames / ~3 seconds at 30fps)
-                if frame_count % 100 == 0:
+                # Success occasionally log
+                if frame_count % 300 == 0:
                     h, w, _ = frame.shape
-                    print(f"✅ Receiving video frame #{frame_count} ({w}x{h}) from {source_url}")
+                    print(f"✅ Serving video frame #{frame_count} ({w}x{h}) from shared VideoManager")
                 frame_count += 1
 
-            # Encode frame as JPEG
-            ret, buffer = cv2.imencode('.jpg', frame)
-            if not ret:
-                continue
+                # Encode frame as JPEG
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if not ret:
+                    continue
 
-            yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
-        cap.release()
+                yield (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            
+            # Control frame rate for clients
+            time.sleep(0.04) # ~25 FPS
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
@@ -407,7 +452,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "timestamp": latest.prediction_date,
         "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
         "recommendation": recommendation,
-        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
+        "image_url": reading.image_path.replace("\\", "/") if reading.image_url else None,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
