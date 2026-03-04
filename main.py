@@ -217,6 +217,40 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     return {"status": "success", "data": data}
 
 # --- 3. VIDEO STREAMING PROXY ---
+def capture_frame(source_url: str, output_path: str) -> bool:
+    """
+    Grabs a single frame from the video stream and saves it to a file.
+    Returns True if successful, False otherwise.
+    """
+    import cv2
+    import time
+
+    print(f"📸 Attempting to capture frame from {source_url}...")
+    cap = cv2.VideoCapture(source_url)
+    
+    if not cap.isOpened():
+        print(f"❌ Could not open video source: {source_url}")
+        return False
+
+    # Try to read a frame (give it a few attempts in case of delay)
+    success = False
+    frame = None
+    for i in range(5):
+        success, frame = cap.read()
+        if success:
+            break
+        time.sleep(0.1)
+
+    if success and frame is not None:
+        cv2.imwrite(output_path, frame)
+        print(f"✅ Frame saved to {output_path}")
+        cap.release()
+        return True
+    
+    print(f"❌ Failed to capture frame from {source_url}")
+    cap.release()
+    return False
+
 @app.get("/video_feed")
 async def video_feed():
     """
