@@ -192,6 +192,16 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     final_bucket_label = data.bucket_id if data.bucket_id else active_bucket_id
     print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
 
+    # --- IMAGE CAPTURE ---
+    # We capture the frame BEFORE saving to DB to ensure we have it
+    source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
+    timestamp_str = (data.timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    image_filename = f"reading_{final_bucket_label}_{timestamp_str}.jpg"
+    image_path = os.path.join("images", image_filename)
+
+    if not capture_frame(source_url, image_path):
+        raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
+
     # For now, we associate with a default experiment or create one if none exists
     experiment = db.query(models.Experiment).first()
     if not experiment:
@@ -207,6 +217,7 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         water_temp=data.temperature,
         status=data.status,
         bucket_label=final_bucket_label,
+        image_path=image_path,
         timestamp=data.timestamp or datetime.now()
     )
     db.add(new_reading)
@@ -214,7 +225,12 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     db.refresh(new_reading)
     print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id} with bucket: {final_bucket_label}")
 
-    return {"status": "success", "data": data}
+    return {
+        "status": "success", 
+        "data": data,
+        "image_path": image_path,
+        "reading_id": new_reading.id
+    }
 
 # --- 3. VIDEO STREAMING PROXY ---
 def capture_frame(source_url: str, output_path: str) -> bool:
