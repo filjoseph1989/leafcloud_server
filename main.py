@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from database import get_db, engine, Base
 import models
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Optional
 
@@ -24,9 +24,9 @@ active_bucket_id: Optional[str] = None
 # --- Models & Enums ---
 class BucketLabel(str, Enum):
     NPK = "NPK"
-    MICRO = "Micro"
-    MIX = "Mix"
-    WATER = "Water"
+    Micro = "Micro"
+    Mix = "Mix"
+    Water = "Water"
     STOP = "STOP"
 
 class ActiveBucketRequest(BaseModel):
@@ -42,12 +42,16 @@ class LoginRequest(BaseModel):
     password: str
 
 class SensorData(BaseModel):
-    temperature: float
+    temperature: float = Field(..., alias="temp", validation_alias="temperature")
     ec: float
     ph: float
     status: str = "active"
-    bucket_id: Optional[BucketLabel] = None
+    bucket_id: Optional[str] = None
     timestamp: datetime = None
+
+    class Config:
+        populate_by_name = True
+
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
 try:
@@ -82,11 +86,16 @@ def set_active_bucket(request: ActiveBucketRequest):
         A dictionary containing the status, updated active_bucket_id, and a message.
     """
     global active_bucket_id
+
+    # Log request to file for easier debugging
+    with open("control_requests.log", "a") as f:
+        f.write(f"{datetime.now()} - Received active bucket request: {request.bucket_id}\n")
+
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
     else:
         active_bucket_id = request.bucket_id.value
-    
+
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
@@ -178,9 +187,9 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         A dictionary confirming success and the processed data.
     """
     print(f"📥 [create_sensor_data] Received payload: {data}")
-    
+
     # Determine bucket label: priority to payload, then global state
-    final_bucket_label = data.bucket_id.value if data.bucket_id else active_bucket_id
+    final_bucket_label = data.bucket_id if data.bucket_id else active_bucket_id
     print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
 
     # For now, we associate with a default experiment or create one if none exists
@@ -218,11 +227,16 @@ async def video_feed():
     source_url = os.getenv("VIDEO_STREAM_URL", "udp://0.0.0.0:5000")
 
     def generate():
+        print(f"📹 Connecting to video stream at {source_url}...")
         cap = cv2.VideoCapture(source_url)
+        frame_count = 0
 
         while True:
             success, frame = cap.read()
             if not success:
+                # Log failure (throttled by the sleep below)
+                print(f"⚠️ No video signal from {source_url}")
+
                 # Fallback: Generate a "NO SIGNAL" placeholder if stream is missing
                 frame = np.zeros((480, 640, 3), np.uint8)
                 cv2.putText(frame, "NO SIGNAL", (220, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -230,6 +244,12 @@ async def video_feed():
 
                 # Sleep briefly to avoid high CPU usage while waiting
                 time.sleep(1.0)
+            else:
+                # Log success occasionally (every ~100 frames / ~3 seconds at 30fps)
+                if frame_count % 100 == 0:
+                    h, w, _ = frame.shape
+                    print(f"✅ Receiving video frame #{frame_count} ({w}x{h}) from {source_url}")
+                frame_count += 1
 
             # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', frame)
@@ -237,7 +257,7 @@ async def video_feed():
                 continue
 
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
         cap.release()
 
@@ -442,6 +462,36 @@ def get_alerts(limit: int = 50, db: Session = Depends(get_db)):
             })
 
     return alerts
+
+@app.get("/admin/readings/")
+def list_readings(
+    skip: int = 0,
+    limit: int = 100,
+    bucket_label: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Admin endpoint to view raw daily readings.
+    Useful for auditing data and verifying sensor inputs.
+    """
+    query = db.query(models.DailyReading)
+
+    if bucket_label:
+        query = query.filter(models.DailyReading.bucket_label == bucket_label)
+
+    # Get total count for pagination UI
+    total_count = query.count()
+
+    readings = query.order_by(desc(models.DailyReading.timestamp))\
+                    .offset(skip)\
+                    .limit(limit)\
+                    .all()
+
+    return {
+        "total": total_count,
+        "page_size": len(readings),
+        "readings": readings
+    }
 
 if __name__ == "__main__":
     import uvicorn
