@@ -69,7 +69,7 @@ def setup_test_env():
     # Cleanup (only if tests didn't delete them)
     if os.path.exists("/tmp/test_image_deletion.db"):
         os.remove("/tmp/test_image_deletion.db")
-    for f in [synced_filename, orphaned_filename]:
+    for f in ["synced_delete_test.jpg", "orphaned_delete_test.jpg", "prefix_test.jpg"]:
         p = os.path.join(test_image_dir, f)
         if os.path.exists(p):
             os.remove(p)
@@ -124,4 +124,27 @@ def test_delete_image_orphaned_success(client):
     assert response.json()["status"] == "success"
 
     # Verify after
+    assert not os.path.exists(os.path.join("images", filename))
+
+def test_delete_image_with_prefix_success(client):
+    """Should delete file even if 'images/' prefix is passed in the path."""
+    test_image_dir = "images"
+    filename = "prefix_test.jpg"
+    with open(os.path.join(test_image_dir, filename), "w") as f:
+        f.write("mock data")
+    
+    headers = {"Authorization": "demo-access-token-xyz-789"}
+    
+    # Path with prefix. We need to handle this because FastAPI path parameters
+    # might split on '/', so we use a path parameter like {filename:path} in implementation
+    # if we want to support full paths, but for now we just test the stripping logic.
+    path_with_prefix = f"images/{filename}"
+    
+    # In FastAPI, /admin/images/images/test.jpg would be 404 unless route is {filename:path}
+    # Let's see if our implementation works with standard encoding or needs route adjustment.
+    response = client.delete(f"/admin/images/{path_with_prefix}", headers=headers)
+    
+    # If this is 404, it's because FastAPI doesn't match the route with slashes in param
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
     assert not os.path.exists(os.path.join("images", filename))
