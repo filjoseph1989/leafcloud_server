@@ -33,3 +33,6 @@ images/
 mock_images/
 *.h5
 leafcloud-queries.dbcnb
+*.db
+.coverage
+*.log
