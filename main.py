@@ -100,6 +100,14 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class ImageInfo(BaseModel):
+    filename: str
+    reading_id: Optional[int] = None
+    timestamp: Optional[datetime] = None
+    bucket_label: Optional[str] = None
+    image_url: str
+    is_orphaned: bool = False
+
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
 import os
@@ -449,6 +457,51 @@ def list_readings(
         "page_size": len(readings),
         "readings": readings
     }
+
+@app.get("/admin/images/", response_model=list[ImageInfo])
+def list_images(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of images from the images/ directory, 
+    synced with database metadata from DailyReading.
+    """
+    image_dir = "images"
+    if not os.path.exists(image_dir):
+        return []
+
+    # 1. Get all image files from disk
+    files = sorted([f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))], reverse=True)
+    
+    # Apply pagination to file list first to avoid massive DB queries
+    paginated_files = files[skip : skip + limit]
+    
+    # 2. Query DB for these specific files
+    # We look for image_path that contains the filename
+    results = []
+    for filename in paginated_files:
+        # Search for record where image_path contains this filename
+        reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}%")).first()
+        
+        if reading:
+            results.append(ImageInfo(
+                filename=filename,
+                reading_id=reading.id,
+                timestamp=reading.timestamp,
+                bucket_label=reading.bucket_label,
+                image_url=f"/images/{filename}",
+                is_orphaned=False
+            ))
+        else:
+            results.append(ImageInfo(
+                filename=filename,
+                image_url=f"/images/{filename}",
+                is_orphaned=True
+            ))
+            
+    return results
 
 if __name__ == "__main__":
     import uvicorn
