@@ -1,7 +1,6 @@
 import os
-import shutil
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, Form, Depends, HTTPException
+from fastapi import FastAPI, Form, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -12,6 +11,7 @@ from dotenv import load_dotenv
 
 from database import get_db, engine, Base
 import models
+from controllers.iot_controller import iot_router, init_iot_controller
 from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Optional
@@ -68,7 +68,7 @@ class VideoManager:
                 else:
                     print(f"⚠️ Video Manager: Lost stream from {self.source_url}. Reconnecting...")
                     break
-            
+
             cap.release()
             time.sleep(1.0)
 
@@ -100,19 +100,10 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-class SensorData(BaseModel):
-    temperature: float = Field(..., alias="temp", validation_alias="temperature")
-    ec: float
-    ph: float
-    status: str = "active"
-    bucket_id: Optional[str] = None
-    timestamp: datetime = None
-
-    class Config:
-        populate_by_name = True
-
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
+import os
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 try:
     import tensorflow as tf
     model = tf.keras.models.load_model("leafcloud_mobilenetv2_model.h5")
@@ -121,7 +112,17 @@ except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
     model = None
 
+# Initialize IoT Controller with dependencies
+init_iot_controller(
+    model=model,
+    video_manager=video_manager,
+    bucket_getter=lambda: active_bucket_id
+)
+
 app = FastAPI(title="LEAFCLOUD API")
+
+# Register Routers
+app.include_router(iot_router)
 
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
@@ -193,7 +194,7 @@ def login(request: LoginRequest):
         HTTPException: If credentials are invalid.
     """
     # In a real app, verify against a Users table with hashed passwords
-    if request.email == "admin@leafcloud.com" and request.password == "admin":
+    if request.email == "admin@leafcloud.com" and request.password == "password":
         return {
             "status": "success",
             "token": "demo-access-token-xyz-789",
@@ -237,81 +238,7 @@ def generate_recommendation(n, p, k, ph, ec):
     # Priority 4: Optimal
     return "Lettuce growth is optimal. No action required."
 
-# --- 2. ENDPOINT FOR IOT (Raspberry Pi uses this) ---
-@app.post("/iot/sensor_data/", status_code=201)
-async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
-    """
-    Receives JSON sensor data from the Raspberry Pi and stores it in the database.
-
-    Args:
-        data: A SensorData object containing readings and optional bucket_id.
-        db: The database session.
-
-    Returns:
-        A dictionary confirming success and the processed data.
-    """
-    print(f"📥 [create_sensor_data] Received payload: {data}")
-
-    # Determine bucket label: priority to payload, then global state
-    final_bucket_label = data.bucket_id if data.bucket_id else active_bucket_id
-    print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
-
-    # --- IMAGE CAPTURE ---
-    # We capture the frame BEFORE saving to DB to ensure we have it
-    timestamp_str = (data.timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    image_filename = f"reading_{final_bucket_label}_{timestamp_str}.jpg"
-    image_path = os.path.join("images", image_filename)
-
-    if not capture_frame("", image_path):
-        raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
-
-    # For now, we associate with a default experiment or create one if none exists
-    experiment = db.query(models.Experiment).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
-
-    new_reading = models.DailyReading(
-        bucket_id=experiment.id,
-        ph=data.ph,
-        ec=data.ec,
-        water_temp=data.temperature,
-        status=data.status,
-        bucket_label=final_bucket_label,
-        image_path=image_path,
-        timestamp=data.timestamp or datetime.now()
-    )
-    db.add(new_reading)
-    db.commit()
-    db.refresh(new_reading)
-    print(f"✅ [create_sensor_data] Successfully saved reading ID: {new_reading.id} with bucket: {final_bucket_label}")
-
-    return {
-        "status": "success",
-        "data": data,
-        "image_path": image_path,
-        "reading_id": new_reading.id
-    }
-
 # --- 3. VIDEO STREAMING PROXY ---
-def capture_frame(source_url: str, output_path: str) -> bool:
-    """
-    Grabs a single frame from the shared VideoManager and saves it to a file.
-    Returns True if successful, False otherwise.
-    """
-    print(f"📸 Attempting to capture frame from shared VideoManager...")
-    frame = video_manager.get_latest_frame()
-
-    if frame is not None:
-        cv2.imwrite(output_path, frame)
-        print(f"✅ Frame saved to {output_path}")
-        return True
-    
-    print(f"❌ Failed to capture frame: No recent frame in VideoManager.")
-    return False
-
 @app.get("/video_feed")
 async def video_feed():
     """
@@ -352,76 +279,11 @@ async def video_feed():
 
                 yield (b'--frame\r\n'
                     b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            
+
             # Control frame rate for clients
             time.sleep(0.04) # ~25 FPS
 
     return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-@app.post("/iot/upload_data/")
-async def upload_from_iot(
-    image: UploadFile,
-    ph: float = Form(...),
-    ec: float = Form(...),
-    temp: float = Form(...),
-    bucket_label: str = Form("unknown"), # Added to link to experiment
-    db: Session = Depends(get_db)
-):
-    # A. Save Image
-    os.makedirs("images", exist_ok=True)
-    filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{image.filename}"
-    file_path = os.path.join("images", filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
-
-    # B. Find or Create Experiment (Simplified logic)
-    # In a real app, you might look up by bucket_label
-    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label=bucket_label, start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
-
-    # C. Save Sensor Data
-    reading = models.DailyReading(
-        bucket_id=experiment.id,
-        image_path=file_path,
-        ph=ph,
-        ec=ec,
-        water_temp=temp
-    )
-    db.add(reading)
-    db.commit()
-    db.refresh(reading)
-
-    # D. Run AI (Server-Side Processing)
-    predicted_n, predicted_p, predicted_k = 0.0, 0.0, 0.0
-
-    if model:
-        try:
-            img = Image.open(file_path).convert('RGB').resize((224, 224))
-            img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
-            prediction = model.predict(img_array)
-            predicted_n, predicted_p, predicted_k = prediction[0]
-        except Exception as e:
-            print(f"Prediction Error: {e}")
-    else:
-        # Dummy fallback if model isn't loaded
-        predicted_n, predicted_p, predicted_k = 150.0, 50.0, 200.0
-
-    # E. Save Prediction
-    pred_record = models.NPKPrediction(
-        daily_reading_id=reading.id,
-        predicted_n=float(predicted_n),
-        predicted_p=float(predicted_p),
-        predicted_k=float(predicted_k)
-    )
-    db.add(pred_record)
-    db.commit()
-
-    return {"status": "success", "message": "Data processed and NPK calculated"}
 
 # --- 3. ENDPOINT FOR MOBILE APP (Android uses this) ---
 @app.get("/app/latest_status/")

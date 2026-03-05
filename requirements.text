@@ -16,7 +16,7 @@ opencv-python
 Pillow
 
 # AI Model Training (Requires Python <= 3.12 for stable support)
-# tensorflow
+tensorflow
 
 # Utilities
 requests

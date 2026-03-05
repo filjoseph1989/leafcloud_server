@@ -27,7 +27,6 @@ dist/
 
 # Environment variables
 .env
-docs
 
 # Generated Artifacts
 images/
