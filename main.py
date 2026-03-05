@@ -179,7 +179,7 @@ def set_active_bucket(request: ActiveBucketRequest):
         "message": f"Active bucket set to {active_bucket_id}"
     }
 
-@app.post("/app/login/")
+@app.post("/auth/login")
 def login(request: LoginRequest):
     """
     Simple authentication endpoint for the mobile app.
@@ -194,7 +194,7 @@ def login(request: LoginRequest):
         HTTPException: If credentials are invalid.
     """
     # In a real app, verify against a Users table with hashed passwords
-    if request.email == "admin@leafcloud.com" and request.password == "password":
+    if request.email == "admin@leafcloud.com" and request.password == "admin":
         return {
             "status": "success",
             "token": "demo-access-token-xyz-789",
