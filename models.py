@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -30,6 +30,7 @@ class DailyReading(Base):
 
     image_path = Column(String(255))
     ph = Column(Float)
+    ph_is_estimated = Column(Boolean, default=True)
     ec = Column(Float)
     water_temp = Column(Float)
     status = Column(String(50), nullable=True, default="active")
