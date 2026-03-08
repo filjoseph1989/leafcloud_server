@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -10,7 +10,8 @@ class Experiment(Base):
     __tablename__ = "experiments"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_label = Column(String(50))
+    experiment_id = Column(String(50), unique=True, index=True) # e.g. "EXP-001"
+    bucket_label = Column(String(50), nullable=True)
     start_date = Column(Date)
 
     # Relationship
@@ -24,18 +25,15 @@ class DailyReading(Base):
     __tablename__ = "daily_readings"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_id = Column(Integer, ForeignKey("experiments.id"))
+    experiment_id = Column(Integer, ForeignKey("experiments.id"))
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     image_path = Column(String(255))
     ph = Column(Float)
+    ph_is_estimated = Column(Boolean, default=True, server_default=func.true())
     ec = Column(Float)
     water_temp = Column(Float)
     status = Column(String(50), nullable=True, default="active")
-    bucket_label = Column(String(50), nullable=True)
-
-    # Links to Lab Results (if taken)
-    sample_bottle_label = Column(String(50), nullable=True)
 
     # Relationships
     experiment = relationship("Experiment", back_populates="readings")

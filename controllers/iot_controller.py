@@ -11,7 +11,7 @@ from PIL import Image
 
 from database import get_db
 import models
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
@@ -20,13 +20,15 @@ iot_router = APIRouter(prefix="/iot", tags=["IoT"])
 AI_MODEL = None
 VIDEO_MANAGER = None
 ACTIVE_BUCKET_GETTER = None
+ACTIVE_EXPERIMENT_GETTER = None
 
-def init_iot_controller(model=None, video_manager=None, bucket_getter=None):
+def init_iot_controller(model=None, video_manager=None, bucket_getter=None, experiment_getter=None):
     """Initializes the controller with necessary global state."""
-    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER
+    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER, ACTIVE_EXPERIMENT_GETTER
     AI_MODEL = model
     VIDEO_MANAGER = video_manager
     ACTIVE_BUCKET_GETTER = bucket_getter
+    ACTIVE_EXPERIMENT_GETTER = experiment_getter
 
 def get_active_bucket_id():
     """Helper to get the current global active_bucket_id."""
@@ -34,16 +36,26 @@ def get_active_bucket_id():
         return ACTIVE_BUCKET_GETTER()
     return None
 
+def get_active_experiment_id():
+    """Helper to get the current global active_experiment_id."""
+    if ACTIVE_EXPERIMENT_GETTER:
+        return ACTIVE_EXPERIMENT_GETTER()
+    return None
+
 class SensorData(BaseModel):
-    temperature: float = Field(..., alias="temp", validation_alias="temperature")
+    model_config = ConfigDict(populate_by_name=True)
+
+    temperature: float = Field(..., validation_alias=AliasChoices("temp", "temperature", "water_temp"))
     ec: float
     ph: float
+    # ph_is_estimated: Boolean flag indicating if the pH was simulated (True) 
+    # or measured from physical hardware (False). This is part of the Hybrid Data Strategy
+    # implemented to bypass the ADC hardware bottleneck for the capstone defense.
+    ph_is_estimated: bool = True
     status: str = "active"
     bucket_id: Optional[str] = None
-    timestamp: datetime = None
-
-    class Config:
-        populate_by_name = True
+    experiment_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
 
 def capture_frame(output_path: str) -> bool:
     """
@@ -65,6 +77,42 @@ def capture_frame(output_path: str) -> bool:
     print(f"❌ Failed to capture frame: No recent frame in VideoManager.")
     return False
 
+def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_label: Optional[str] = None) -> models.Experiment:
+    """
+    Resolves the experiment to associate data with. 
+    Follows priority: payload experiment_id > global active_experiment_id > auto-generated ID.
+    Ensures an experiment record is created exactly once in the database.
+    """
+    # 1. Determine the target experiment_id string
+    target_id = None
+    
+    if experiment_id:
+        target_id = experiment_id
+    else:
+        # Check global state (set by Mobile App)
+        target_id = get_active_experiment_id()
+    
+    if not target_id:
+        # Final fallback: Auto-generated ID based on the bucket label
+        label = bucket_label or "NPK"
+        target_id = f"EXP-{label.upper()}-AUTO"
+
+    # 2. Find existing record or create once
+    experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == target_id).first()
+    
+    if not experiment:
+        print(f"📦 [resolve_experiment] Creating new experiment record: {target_id}")
+        experiment = models.Experiment(
+            experiment_id=target_id,
+            bucket_label=bucket_label or "NPK",
+            start_date=datetime.now().date()
+        )
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
+            
+    return experiment
+
 @iot_router.post("/sensor_data/", status_code=201)
 async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
@@ -84,23 +132,19 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     image_path = os.path.join("images", image_filename)
 
     if not capture_frame(image_path):
-        raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
+        print(f"⚠️ [create_sensor_data] Capture failed, continuing without image.")
+        image_path = None
 
-    # Associate with an experiment
-    experiment = db.query(models.Experiment).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
+    # Resolve experiment
+    experiment = resolve_experiment(db, experiment_id=data.experiment_id, bucket_label=final_bucket_label)
 
     new_reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         ph=data.ph,
+        ph_is_estimated=data.ph_is_estimated,
         ec=data.ec,
         water_temp=data.temperature,
         status=data.status,
-        bucket_label=final_bucket_label,
         image_path=image_path,
         timestamp=data.timestamp or datetime.now()
     )
@@ -111,9 +155,9 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
 
     return {
         "status": "success",
-        "data": data,
-        "image_path": image_path,
-        "reading_id": new_reading.id
+        "reading_id": new_reading.id,
+        "experiment_id": experiment.experiment_id,
+        "image_path": image_path
     }
 
 @iot_router.post("/upload_data/")
@@ -137,16 +181,11 @@ async def upload_from_iot(
         shutil.copyfileobj(image.file, buffer)
 
     # B. Find or Create Experiment
-    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label=bucket_label, start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
+    experiment = resolve_experiment(db, bucket_label=bucket_label)
 
     # C. Save Sensor Data
     reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         image_path=file_path,
         ph=ph,
         ec=ec,

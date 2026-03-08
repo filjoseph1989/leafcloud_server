@@ -10,12 +10,16 @@ from main import app
 from datetime import datetime
 
 # Test database setup
-SQLALCHEMY_DATABASE_URL = "sqlite:////tmp/test_images.db"
+# Use in-memory SQLite for testing with a single connection
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Use a single connection for the entire module to avoid locks
+connection = engine.connect()
+
 def override_get_db():
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     try:
         yield db
     finally:
@@ -26,9 +30,7 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest.fixture(scope="module", autouse=True)
 def setup_test_env():
     # 1. Setup DB
-    if os.path.exists("/tmp/test_images.db"):
-        os.remove("/tmp/test_images.db")
-    models.Base.metadata.create_all(bind=engine)
+    models.Base.metadata.create_all(bind=connection)
     
     # 2. Setup Mock Images Dir
     test_image_dir = "images"
@@ -46,18 +48,17 @@ def setup_test_env():
         f.write("mock data")
 
     # 3. Seed DB record for synced image
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     experiment = models.Experiment(bucket_label="test", start_date=datetime.now().date())
     db.add(experiment)
     db.commit()
     db.refresh(experiment)
     
     reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         ph=6.0,
         ec=1.0,
         water_temp=20.0,
-        bucket_label="test_bucket",
         image_path=f"images/{synced_filename}",
         timestamp=datetime.now()
     )
@@ -68,8 +69,7 @@ def setup_test_env():
     yield
     
     # Cleanup
-    if os.path.exists("/tmp/test_images.db"):
-        os.remove("/tmp/test_images.db")
+    connection.close()
     if os.path.exists(os.path.join(test_image_dir, synced_filename)):
         os.remove(os.path.join(test_image_dir, synced_filename))
     if os.path.exists(os.path.join(test_image_dir, orphaned_filename)):
@@ -98,7 +98,6 @@ def test_list_images_endpoint(client):
     assert synced is not None
     assert synced["is_orphaned"] is False
     assert synced["reading_id"] is not None
-    assert synced["bucket_label"] == "test_bucket"
     
     # Check orphaned image
     orphaned = next((item for item in data if item["filename"] == "orphaned_test.jpg"), None)

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, date
 from fastapi import FastAPI, Form, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 
 from database import get_db, engine, Base
 import models
-from controllers.iot_controller import iot_router, init_iot_controller
-from pydantic import BaseModel, Field
+from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing import Optional
 
@@ -24,6 +24,7 @@ import threading
 
 # --- Global State ---
 active_bucket_id: Optional[str] = None
+active_experiment_id: Optional[str] = None
 
 # --- Video Management ---
 class VideoManager:
@@ -91,9 +92,36 @@ class BucketLabel(str, Enum):
 class ActiveBucketRequest(BaseModel):
     bucket_id: BucketLabel
 
-# Ensure tables exist
-Base.metadata.create_all(bind=engine)
+# --- Experiment Models ---
+class ExperimentCreate(BaseModel):
+    experiment_id: str = Field(..., example="EXP-101")
+    bucket_label: Optional[str] = None
+    start_date: Optional[date] = None
 
+class ExperimentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    experiment_id: Optional[str] = None
+    bucket_label: Optional[str] = None
+    start_date: Optional[date] = None
+
+class ReadingHistoryItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    timestamp: datetime
+    ph: float
+    ec: float
+    water_temp: float
+    image_url: Optional[str] = None
+    n: Optional[float] = None
+    p: Optional[float] = None
+    k: Optional[float] = None
+
+class ExperimentHistoryResponse(BaseModel):
+    id: int
+    experiment_id: Optional[str] = None
+    history: dict[str, list[ReadingHistoryItem]] # Grouped by bucket_label
 
 # --- Auth Models ---
 class LoginRequest(BaseModel):
@@ -104,7 +132,6 @@ class ImageInfo(BaseModel):
     filename: str
     reading_id: Optional[int] = None
     timestamp: Optional[datetime] = None
-    bucket_label: Optional[str] = None
     image_url: str
     is_orphaned: bool = False
 
@@ -124,7 +151,8 @@ except Exception as e:
 init_iot_controller(
     model=model,
     video_manager=video_manager,
-    bucket_getter=lambda: active_bucket_id
+    bucket_getter=lambda: active_bucket_id,
+    experiment_getter=lambda: active_experiment_id
 )
 
 app = FastAPI(title="LEAFCLOUD API")
@@ -155,20 +183,27 @@ def get_current_status():
     """
     return {
         "active_bucket_id": active_bucket_id,
-        "server_time": datetime.now()
+        "active_experiment_id": active_experiment_id,
+        "server_time": datetime.now().isoformat()
     }
 
-@app.post("/control/active-bucket")
-def set_active_bucket(request: ActiveBucketRequest):
+class ActiveExperimentRequest(BaseModel):
+    experiment_id: Optional[str]
+
+@app.post("/control/active-experiment")
+def set_active_experiment(request: ActiveExperimentRequest):
     """
-    Updates the global active bucket ID.
-    Called by the Mobile App when the user switches nutrient buckets.
+    Updates the global active experiment ID.
+    Called by the Mobile App when the user starts a new crop cycle.
+    """
+    global active_experiment_id
+    active_experiment_id = request.experiment_id
+    return {"status": "success", "active_experiment_id": active_experiment_id}
 
-    Args:
-        request: An ActiveBucketRequest containing the new bucket_id.
-
-    Returns:
-        A dictionary containing the status, updated active_bucket_id, and a message.
+@app.post("/control/active-bucket")
+def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db)):
+    """
+    Updates the global active bucket ID and ensures a corresponding experiment exists.
     """
     global active_bucket_id
 
@@ -178,13 +213,23 @@ def set_active_bucket(request: ActiveBucketRequest):
 
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
-    else:
-        active_bucket_id = request.bucket_id.value
+        return {
+            "status": "success",
+            "active_bucket_id": None,
+            "message": "System stopped"
+        }
+    
+    # 1. Update in-memory state
+    active_bucket_id = request.bucket_id.value
+
+    # 2. Ensure an experiment exists for this bucket (Auto-Initialization)
+    experiment = resolve_experiment(db, bucket_label=active_bucket_id)
 
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
-        "message": f"Active bucket set to {active_bucket_id}"
+        "experiment_id": experiment.experiment_id,
+        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {experiment.experiment_id}"
     }
 
 @app.post("/auth/login")
@@ -210,6 +255,86 @@ def login(request: LoginRequest):
         }
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+# --- 2. ENDPOINTS FOR EXPERIMENTS ---
+
+@app.post("/experiments/", response_model=ExperimentResponse, status_code=201)
+def create_experiment(experiment: ExperimentCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new experiment.
+    """
+    db_experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment.experiment_id).first()
+    if db_experiment:
+        raise HTTPException(status_code=400, detail="Experiment ID already exists")
+
+    new_exp = models.Experiment(
+        experiment_id=experiment.experiment_id,
+        bucket_label=experiment.bucket_label,
+        start_date=experiment.start_date
+    )
+    db.add(new_exp)
+    db.commit()
+    db.refresh(new_exp)
+    return new_exp
+
+@app.get("/experiments/", response_model=list[ExperimentResponse])
+def list_experiments(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Returns a list of all experiments.
+    """
+    experiments = db.query(models.Experiment).offset(skip).limit(limit).all()
+    return experiments
+
+@app.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
+def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves details of a specific experiment by its internal ID.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
+
+@app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse)
+def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Returns time-series sensor data and AI predictions for a specific experiment, grouped by bucket.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    # Query with eager loading of prediction
+    readings = db.query(models.DailyReading)\
+        .filter(models.DailyReading.experiment_id == experiment_id)\
+        .order_by(models.DailyReading.timestamp.asc())\
+        .all()
+
+    # Group by bucket_label and extract NPK
+    # Note: All readings in this query belong to the same experiment, 
+    # and thus the same bucket_label from the Experiment table.
+    label = experiment.bucket_label or "unknown"
+    history_list = []
+    
+    for r in readings:
+        # Manually construct item to handle the nested prediction relationship
+        item = {
+            "timestamp": r.timestamp,
+            "ph": r.ph,
+            "ec": r.ec,
+            "water_temp": r.water_temp,
+            "image_url": f"/images/{os.path.basename(r.image_path)}" if r.image_path else None,
+            "n": r.prediction.predicted_n if r.prediction else None,
+            "p": r.prediction.predicted_p if r.prediction else None,
+            "k": r.prediction.predicted_k if r.prediction else None,
+        }
+        history_list.append(item)
+
+    return {
+        "id": experiment.id,
+        "experiment_id": experiment.experiment_id,
+        "history": {label: history_list}
+    }
 
 def generate_recommendation(n, p, k, ph, ec):
     """
@@ -322,7 +447,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "timestamp": latest.prediction_date,
         "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
         "recommendation": recommendation,
-        "image_url": reading.image_path.replace("\\", "/") if reading.image_url else None,
+        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
@@ -442,7 +567,7 @@ def list_readings(
     query = db.query(models.DailyReading)
 
     if bucket_label:
-        query = query.filter(models.DailyReading.bucket_label == bucket_label)
+        query = query.join(models.Experiment).filter(models.Experiment.bucket_label == bucket_label)
 
     # Get total count for pagination UI
     total_count = query.count()
@@ -490,7 +615,6 @@ def list_images(
                 filename=filename,
                 reading_id=reading.id,
                 timestamp=reading.timestamp,
-                bucket_label=reading.bucket_label,
                 image_url=f"/images/{filename}",
                 is_orphaned=False
             ))

@@ -9,18 +9,16 @@ from main import app
 
 import os
 
-# Use a persistent SQLite file for testing to avoid in-memory connection issues
-SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
+# Use in-memory SQLite for testing with a single connection
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 test_engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-
-# OVERRIDE ALL THE THINGS
-main.engine = test_engine
-main.Base = models.Base 
-
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
+# Use a single connection for the entire module to avoid locks
+connection = test_engine.connect()
+
 def override_get_db():
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     try:
         yield db
     finally:
@@ -28,15 +26,12 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", autouse=True)
 def setup_db():
-    # Force registration of models by importing them
-    import models
-    models.Base.metadata.create_all(bind=test_engine)
+    models.Base.metadata.create_all(bind=connection)
     yield
-    models.Base.metadata.drop_all(bind=test_engine)
-    if os.path.exists("./test.db"):
-        os.remove("./test.db")
+    models.Base.metadata.drop_all(bind=connection)
+    connection.close()
 
 @pytest.fixture
 def client(setup_db):
@@ -63,10 +58,10 @@ def test_sensor_data_with_explicit_bucket(client):
     assert response.status_code == 201
     
     # Verify in DB
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
     assert reading is not None
-    assert reading.bucket_label == "NPK"
+    assert reading.experiment.bucket_label == "NPK"
     db.close()
 
 def test_sensor_data_with_global_fallback(client):
@@ -84,10 +79,10 @@ def test_sensor_data_with_global_fallback(client):
     assert response.status_code == 201
     
     # Verify in DB
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
     assert reading is not None
-    assert reading.bucket_label == "Water"
+    assert reading.experiment.bucket_label == "Water"
     db.close()
 
 def test_sensor_data_with_no_bucket(client):
@@ -104,8 +99,9 @@ def test_sensor_data_with_no_bucket(client):
     assert response.status_code == 201
     
     # Verify in DB
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
     assert reading is not None
-    assert reading.bucket_label is None
+    # If no bucket provided, it should link to the default experiment created by iot_controller
+    assert reading.experiment.bucket_label == "NPK" 
     db.close()

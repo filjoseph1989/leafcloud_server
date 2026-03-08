@@ -14,6 +14,21 @@ def test_get_current_status_initial(client):
     response = client.get("/control/current-status")
     assert response.status_code == 200
     assert response.json()["active_bucket_id"] is None
+    assert response.json()["active_experiment_id"] is None
+
+def test_post_active_experiment_valid(client):
+    """
+    Verifies that setting a valid experiment ID works.
+    """
+    payload = {"experiment_id": "EXP-2026-03"}
+    response = client.post("/control/active-experiment", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert response.json()["active_experiment_id"] == "EXP-2026-03"
+
+    # Verify via GET
+    status_response = client.get("/control/current-status")
+    assert status_response.json()["active_experiment_id"] == "EXP-2026-03"
 
 def test_post_active_bucket_valid(client):
     """
