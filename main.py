@@ -113,7 +113,6 @@ class ReadingHistoryItem(BaseModel):
     ph: float
     ec: float
     water_temp: float
-    bucket_label: Optional[str]
     image_url: Optional[str] = None
     n: Optional[float] = None
     p: Optional[float] = None
@@ -133,7 +132,6 @@ class ImageInfo(BaseModel):
     filename: str
     reading_id: Optional[int] = None
     timestamp: Optional[datetime] = None
-    bucket_label: Optional[str] = None
     image_url: str
     is_orphaned: bool = False
 
@@ -310,30 +308,29 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
         .all()
 
     # Group by bucket_label and extract NPK
-    grouped = {}
+    # Note: All readings in this query belong to the same experiment, 
+    # and thus the same bucket_label from the Experiment table.
+    label = experiment.bucket_label or "unknown"
+    history_list = []
+    
     for r in readings:
-        label = r.bucket_label or "unknown"
-        if label not in grouped:
-            grouped[label] = []
-
         # Manually construct item to handle the nested prediction relationship
         item = {
             "timestamp": r.timestamp,
             "ph": r.ph,
             "ec": r.ec,
             "water_temp": r.water_temp,
-            "bucket_label": r.bucket_label,
             "image_url": f"/images/{os.path.basename(r.image_path)}" if r.image_path else None,
             "n": r.prediction.predicted_n if r.prediction else None,
             "p": r.prediction.predicted_p if r.prediction else None,
             "k": r.prediction.predicted_k if r.prediction else None,
         }
-        grouped[label].append(item)
+        history_list.append(item)
 
     return {
         "id": experiment.id,
         "experiment_id": experiment.experiment_id,
-        "history": grouped
+        "history": {label: history_list}
     }
 
 def generate_recommendation(n, p, k, ph, ec):
@@ -447,7 +444,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "timestamp": latest.prediction_date,
         "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
         "recommendation": recommendation,
-        "image_url": reading.image_path.replace("\\", "/") if reading.image_url else None,
+        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
@@ -567,7 +564,7 @@ def list_readings(
     query = db.query(models.DailyReading)
 
     if bucket_label:
-        query = query.filter(models.DailyReading.bucket_label == bucket_label)
+        query = query.join(models.Experiment).filter(models.Experiment.bucket_label == bucket_label)
 
     # Get total count for pagination UI
     total_count = query.count()
@@ -615,7 +612,6 @@ def list_images(
                 filename=filename,
                 reading_id=reading.id,
                 timestamp=reading.timestamp,
-                bucket_label=reading.bucket_label,
                 image_url=f"/images/{filename}",
                 is_orphaned=False
             ))

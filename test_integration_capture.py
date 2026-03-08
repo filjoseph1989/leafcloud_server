@@ -10,14 +10,16 @@ from unittest.mock import patch
 import os
 from datetime import date
 
-# Use a temporary file for the database in /tmp to avoid lock issues on some filesystems
-TEST_DB_FILE = "/tmp/test_integration_persistent.db"
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{TEST_DB_FILE}"
+# Use in-memory SQLite for testing with a single connection
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 test_engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
+# Use a single connection for the entire module to avoid locks
+connection = test_engine.connect()
+
 def override_get_db():
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     try:
         yield db
     finally:
@@ -27,14 +29,10 @@ app.dependency_overrides[get_db] = override_get_db
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_db():
-    # Ensure a clean start
-    if os.path.exists(TEST_DB_FILE):
-        os.remove(TEST_DB_FILE)
-        
-    Base.metadata.create_all(bind=test_engine)
+    Base.metadata.create_all(bind=connection)
     
     # Create a default experiment
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     default_exp = models.Experiment(
         experiment_id="EXP-TEST-INTEGRATION",
         bucket_label="default",
@@ -45,9 +43,7 @@ def setup_db():
     db.close()
     
     yield
-    # Cleanup after all tests in the module
-    if os.path.exists(TEST_DB_FILE):
-        os.remove(TEST_DB_FILE)
+    connection.close()
 
 @pytest.fixture
 def client():
@@ -75,7 +71,7 @@ def test_create_sensor_data_with_successful_capture(client):
         assert data["status"] == "success"
         
         # Verify in DB
-        db = TestingSessionLocal()
+        db = TestingSessionLocal(bind=connection)
         reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
         assert reading.ph == 6.0
         db.close()
@@ -101,7 +97,7 @@ def test_create_sensor_data_with_failed_capture(client):
         assert response.status_code == 201
         
         # Verify in DB
-        db = TestingSessionLocal()
+        db = TestingSessionLocal(bind=connection)
         reading = db.query(models.DailyReading).filter(models.DailyReading.ph == 7.0).first()
         assert reading is not None
         assert reading.image_path is None

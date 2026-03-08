@@ -77,6 +77,54 @@ def capture_frame(output_path: str) -> bool:
     print(f"❌ Failed to capture frame: No recent frame in VideoManager.")
     return False
 
+def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_label: Optional[str] = None) -> models.Experiment:
+    """
+    Finds an existing experiment or auto-creates one based on the provided identifiers.
+    Priority: experiment_id > newest bucket_label match > global active_experiment_id > newest experiment.
+    """
+    experiment = None
+    
+    # 1. Direct ID match
+    if experiment_id:
+        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment_id).first()
+        if not experiment:
+            raise HTTPException(status_code=400, detail=f"Experiment '{experiment_id}' not found.")
+    
+    # 2. Bucket label match (newest)
+    if not experiment and bucket_label:
+        experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).order_by(desc(models.Experiment.id)).first()
+    
+    # 3. Global active fallback
+    if not experiment:
+        active_exp_id = get_active_experiment_id()
+        if active_exp_id:
+            experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == active_exp_id).first()
+
+    # 4. Newest experiment fallback
+    if not experiment:
+        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
+
+    # 5. AUTO-CREATE as final fallback
+    if not experiment:
+        label = bucket_label or "NPK"
+        auto_id = f"EXP-{label.upper()}-AUTO"
+        print(f"📦 [resolve_experiment] Auto-creating experiment: {auto_id}")
+        
+        # Check if this auto_id already exists (concurrency safety)
+        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == auto_id).first()
+        
+        if not experiment:
+            experiment = models.Experiment(
+                experiment_id=auto_id,
+                bucket_label=label,
+                start_date=datetime.now().date()
+            )
+            db.add(experiment)
+            db.commit()
+            db.refresh(experiment)
+            
+    return experiment
+
 @iot_router.post("/sensor_data/", status_code=201)
 async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
@@ -99,34 +147,8 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         print(f"⚠️ [create_sensor_data] Capture failed, continuing without image.")
         image_path = None
 
-    # Associate with an experiment
-    if data.experiment_id:
-        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == data.experiment_id).first()
-        if not experiment:
-            raise HTTPException(status_code=400, detail=f"Experiment '{data.experiment_id}' not found.")
-    else:
-        # Fallback: check global active_experiment_id first
-        active_exp_id = get_active_experiment_id()
-        if active_exp_id:
-            experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == active_exp_id).first()
-        else:
-            experiment = None
-
-        # Fallback: newest experiment
-        if not experiment:
-            experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
-        
-        # If still no experiment (clean DB), create a default one
-        if not experiment:
-            print("📦 [create_sensor_data] No experiments found. Creating default 'EXP-DEFAULT'.")
-            experiment = models.Experiment(
-                experiment_id="EXP-DEFAULT",
-                bucket_label="NPK",
-                start_date=datetime.now().date()
-            )
-            db.add(experiment)
-            db.commit()
-            db.refresh(experiment)
+    # Resolve experiment
+    experiment = resolve_experiment(db, experiment_id=data.experiment_id, bucket_label=final_bucket_label)
 
     new_reading = models.DailyReading(
         experiment_id=experiment.id,
@@ -135,7 +157,6 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         ec=data.ec,
         water_temp=data.temperature,
         status=data.status,
-        bucket_label=final_bucket_label,
         image_path=image_path,
         timestamp=data.timestamp or datetime.now()
     )
@@ -172,15 +193,7 @@ async def upload_from_iot(
         shutil.copyfileobj(image.file, buffer)
 
     # B. Find or Create Experiment
-    # Note: For now, we search by bucket_label as fallback if no global context, 
-    # but the goal is to link to the newest experiment if bucket matches.
-    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).order_by(desc(models.Experiment.id)).first()
-    if not experiment:
-        # Fallback: just newest experiment
-        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
-    
-    if not experiment:
-         raise HTTPException(status_code=400, detail="No active experiment found. Create one first.")
+    experiment = resolve_experiment(db, bucket_label=bucket_label)
 
     # C. Save Sensor Data
     reading = models.DailyReading(

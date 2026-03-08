@@ -34,10 +34,6 @@ class DailyReading(Base):
     ec = Column(Float)
     water_temp = Column(Float)
     status = Column(String(50), nullable=True, default="active")
-    bucket_label = Column(String(50), nullable=True)
-
-    # Links to Lab Results (if taken)
-    sample_bottle_label = Column(String(50), nullable=True)
 
     # Relationships
     experiment = relationship("Experiment", back_populates="readings")

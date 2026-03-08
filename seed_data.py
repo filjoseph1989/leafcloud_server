@@ -99,8 +99,7 @@ def seed():
                 image_path=f"images/{image_filename}", # Relative path
                 ph=round(random.uniform(5.8, 6.2), 2),
                 ec=round(ec_val, 2),
-                water_temp=round(random.uniform(22.0, 26.0), 1),
-                sample_bottle_label=sample_label
+                water_temp=round(random.uniform(22.0, 26.0), 1)
             )
             db.add(reading)
             db.commit() # Commit reading to get ID

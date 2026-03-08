@@ -46,9 +46,9 @@ def get_dataset():
     engine = create_engine(DB_URL)
 
     # A. Fetch Daily Readings (The "Questions")
-    # We grab the ID, Date, Image, and the Bottle Label (if it exists)
+    # We grab the ID, Date, Image
     query_daily = """
-    SELECT id, timestamp, image_path, sample_bottle_label
+    SELECT id, timestamp, image_path
     FROM daily_readings
     ORDER BY timestamp ASC
     """
@@ -59,8 +59,12 @@ def get_dataset():
     df_lab = pd.read_sql(query_lab, engine)
 
     # C. Merge Tables
-    # This attaches the Lab NPK to the specific days we took samples
-    df_merged = pd.merge(df_daily, df_lab, on='sample_bottle_label', how='left')
+    # NOTE: sample_bottle_label was removed from daily_readings as redundant.
+    # Training currently defaults to mock data or requires a different matching strategy.
+    # df_merged = pd.merge(df_daily, df_lab, on='sample_bottle_label', how='left')
+    df_merged = df_daily.copy()
+    for col in ['n_val', 'p_val', 'k_val']:
+        df_merged[col] = np.nan
 
     # D. Interpolation (The Magic Step)
     # Fills in the blanks between lab tests
