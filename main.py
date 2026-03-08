@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from fastapi import FastAPI, Form, Depends, HTTPException
+from fastapi import FastAPI, Form, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -269,7 +269,7 @@ async def video_feed():
                 ret, buffer = cv2.imencode('.jpg', frame)
                 if ret:
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                      b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
                 # Sleep briefly to avoid high CPU usage while waiting
                 time.sleep(1.0)
@@ -465,7 +465,7 @@ def list_images(
     db: Session = Depends(get_db)
 ):
     """
-    Returns a list of images from the images/ directory, 
+    Returns a list of images from the images/ directory,
     synced with database metadata from DailyReading.
     """
     image_dir = "images"
@@ -474,17 +474,17 @@ def list_images(
 
     # 1. Get all image files from disk
     files = sorted([f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))], reverse=True)
-    
+
     # Apply pagination to file list first to avoid massive DB queries
     paginated_files = files[skip : skip + limit]
-    
+
     # 2. Query DB for these specific files
     # We look for image_path that contains the filename
     results = []
     for filename in paginated_files:
         # Search for record where image_path contains this filename
         reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}%")).first()
-        
+
         if reading:
             results.append(ImageInfo(
                 filename=filename,
@@ -500,8 +500,54 @@ def list_images(
                 image_url=f"/images/{filename}",
                 is_orphaned=True
             ))
-            
+
     return results
+
+@app.delete("/admin/images/{filename:path}")
+def delete_image(
+    filename: str,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Deletes an image from the filesystem and removes its metadata from the DB if present.
+    """
+    # 1. Authentication Check
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 2. Cleanup filename (handle optional 'images/' prefix from URL)
+    # If user sends 'images/filename.jpg' or '/images/filename.jpg', we strip it
+    clean_filename = filename.lstrip("/").replace("images/", "")
+
+    # 3. Path Traversal Protection & Existence Check
+    image_dir = "images"
+    if "/" in clean_filename or "\\" in clean_filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = os.path.join(image_dir, clean_filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
+
+    # 4. Database Cleanup (if record exists)
+    # Search for record where image_path contains this filename
+    reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{clean_filename}")).first()
+
+    if reading:
+        db.query(models.NPKPrediction).filter(models.NPKPrediction.daily_reading_id == reading.id).delete()
+        db.delete(reading)
+        db.commit()
+        print(f"🗑️ Deleted DB record for reading ID: {reading.id}")
+
+    # 5. Filesystem Deletion
+    try:
+        os.remove(file_path)
+        print(f"🗑️ Deleted file from disk: {file_path}")
+    except Exception as e:
+        print(f"❌ Failed to delete file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+
+    return {"status": "success", "message": f"Image {clean_filename} and associated data deleted"}
 
 if __name__ == "__main__":
     import uvicorn
