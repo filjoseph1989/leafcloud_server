@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from database import get_db, engine, Base
 import models
 from controllers.iot_controller import iot_router, init_iot_controller
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from enum import Enum
 from typing import Optional
 
@@ -151,6 +151,8 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 # --- Lifecycle Events ---
 @app.on_event("startup")
 async def startup_event():
+    # Ensure tables exist (fail-safe if migrations weren't run)
+    Base.metadata.create_all(bind=engine)
     video_manager.start()
 
 @app.on_event("shutdown")
@@ -222,6 +224,14 @@ def login(request: LoginRequest):
         }
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.get("/test_db")
+def test_db(db: Session = Depends(get_db)):
+    try:
+        count = db.query(models.Experiment).count()
+        return {"status": "ok", "experiment_count": count}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # --- 2. ENDPOINTS FOR EXPERIMENTS ---
 
