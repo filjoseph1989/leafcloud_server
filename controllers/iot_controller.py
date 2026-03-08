@@ -11,7 +11,7 @@ from PIL import Image
 
 from database import get_db
 import models
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
@@ -37,7 +37,7 @@ def get_active_bucket_id():
 class SensorData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    temperature: float
+    temperature: float = Field(..., validation_alias=AliasChoices("temp", "temperature", "water_temp"))
     ec: float
     ph: float
     status: str = "active"
@@ -84,7 +84,8 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     image_path = os.path.join("images", image_filename)
 
     if not capture_frame(image_path):
-        raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
+        print(f"⚠️ [create_sensor_data] Capture failed, continuing without image.")
+        image_path = None
 
     # Associate with an experiment
     if data.experiment_id:
@@ -114,9 +115,9 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
 
     return {
         "status": "success",
-        "data": data,
-        "image_path": image_path,
-        "reading_id": new_reading.id
+        "reading_id": new_reading.id,
+        "experiment_id": experiment.experiment_id,
+        "image_path": image_path
     }
 
 @iot_router.post("/upload_data/")

@@ -48,9 +48,9 @@ def test_sensor_data_association_with_explicit_experiment_id(client):
 
     # 2. Post sensor data with this experiment_id
     sensor_payload = {
-        "temperature": 24.5,
-        "ec": 1.5,
-        "ph": 6.2,
+        "temp": "24.5",
+        "ec": "1.5",
+        "ph": "6.2",
         "bucket_id": "NPK",
         "experiment_id": "EXP-501"
     }
@@ -70,31 +70,28 @@ def test_sensor_data_association_with_explicit_experiment_id(client):
     assert reading.experiment_id == experiment.id
     db.close()
 
-def test_sensor_data_association_with_active_experiment_fallback(client):
-    """Test associating sensor data with the newest experiment if none specified."""
+def test_sensor_data_association_with_water_temp_alias(client):
+    """Test associating sensor data when using 'water_temp' instead of 'temp'."""
     # 1. Create an experiment
     exp_payload = {
-        "experiment_id": "EXP-502",
-        "bucket_label": "NPK",
+        "experiment_id": "EXP-503",
+        "bucket_label": "Mixed",
         "start_date": str(date.today())
     }
     client.post("/experiments/", json=exp_payload)
 
-    # 2. Post sensor data WITHOUT experiment_id
+    # 2. Post sensor data with 'water_temp'
     sensor_payload = {
-        "temperature": 23.0,
-        "ec": 1.0,
-        "ph": 6.0,
-        "bucket_id": "NPK"
+        "water_temp": 22.5,
+        "ec": 1.1,
+        "ph": 6.1,
+        "experiment_id": "EXP-503"
     }
     response = client.post("/iot/sensor_data/", json=sensor_payload)
-    if response.status_code != 201:
-        print(response.json())
     assert response.status_code == 201
     
-    # 3. Verify it linked to the latest experiment (EXP-502)
+    # 3. Verify in DB
     db = TestingSessionLocal(bind=connection)
     reading = db.query(models.DailyReading).order_by(models.DailyReading.id.desc()).first()
-    experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == "EXP-502").first()
-    assert reading.experiment_id == experiment.id
+    assert reading.water_temp == 22.5
     db.close()

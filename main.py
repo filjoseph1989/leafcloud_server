@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, date
-from fastapi import FastAPI, Form, Depends, HTTPException, Header
+from fastapi import FastAPI, Form, Depends, HTTPException, Header, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -232,6 +232,14 @@ def test_db(db: Session = Depends(get_db)):
         return {"status": "ok", "experiment_count": count}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.post("/debug_body")
+async def debug_body(request: Request):
+    try:
+        body = await request.json()
+        return {"body": body}
+    except Exception as e:
+        return {"error": str(e)}
 
 # --- 2. ENDPOINTS FOR EXPERIMENTS ---
 
