@@ -84,3 +84,35 @@ def test_get_experiment_history_not_found(client):
     """Test history for non-existent experiment."""
     response = client.get("/experiments/9999/history")
     assert response.status_code == 404
+
+def test_get_experiment_history_null_experiment_id(client):
+    """Test history for an experiment with NULL experiment_id (simulating legacy data)."""
+    # 1. Manually add experiment with NULL experiment_id
+    session = TestingSessionLocal(bind=connection)
+    legacy_exp = models.Experiment(
+        experiment_id=None,
+        bucket_label="Legacy",
+        start_date=date.today()
+    )
+    session.add(legacy_exp)
+    session.commit()
+    exp_id = legacy_exp.id
+    
+    # Add a reading
+    r1 = models.DailyReading(
+        experiment_id=exp_id,
+        ph=6.0, ec=1.0, water_temp=20.0,
+        bucket_label="Legacy",
+        timestamp=datetime.now()
+    )
+    session.add(r1)
+    session.commit()
+    session.close()
+
+    # 2. Fetch history
+    response = client.get(f"/experiments/{exp_id}/history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == exp_id
+    assert data["experiment_id"] is None
+    assert "Legacy" in data["history"]

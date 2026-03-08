@@ -103,7 +103,7 @@ class ExperimentResponse(BaseModel):
     id: int
     experiment_id: Optional[str] = None
     bucket_label: Optional[str] = None
-    start_date: Optional[date]
+    start_date: Optional[date] = None
 
 class ReadingHistoryItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -120,7 +120,7 @@ class ReadingHistoryItem(BaseModel):
 
 class ExperimentHistoryResponse(BaseModel):
     id: int
-    experiment_id: str
+    experiment_id: Optional[str] = None
     history: dict[str, list[ReadingHistoryItem]] # Grouped by bucket_label
 
 # --- Auth Models ---
