@@ -52,11 +52,13 @@ def test_get_experiment_history_success(client):
     r1 = models.DailyReading(
         experiment_id=exp_internal_id,
         ph=6.0, ec=1.0, water_temp=20.0,
+        bucket_label="NPK",
         timestamp=datetime.now() - timedelta(days=1)
     )
     r2 = models.DailyReading(
         experiment_id=exp_internal_id,
         ph=6.2, ec=1.1, water_temp=21.0,
+        bucket_label="NPK",
         timestamp=datetime.now()
     )
     session.add_all([r1, r2])
@@ -68,9 +70,9 @@ def test_get_experiment_history_success(client):
     assert response.status_code == 200
     data = response.json()
     assert data["experiment_id"] == "EXP-HIST-01"
-    assert len(data["history"]) == 2
-    assert data["history"][0]["ph"] == 6.0
-    assert data["history"][1]["ec"] == 1.1
+    assert "NPK" in data["history"]
+    assert len(data["history"]["NPK"]) == 2
+    assert data["history"]["NPK"][0]["ph"] == 6.0
 
 def test_get_experiment_history_not_found(client):
     """Test history for non-existent experiment."""

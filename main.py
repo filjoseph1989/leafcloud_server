@@ -119,7 +119,7 @@ class ReadingHistoryItem(BaseModel):
 class ExperimentHistoryResponse(BaseModel):
     id: int
     experiment_id: str
-    history: list[ReadingHistoryItem]
+    history: dict[str, list[ReadingHistoryItem]] # Grouped by bucket_label
 
 # --- Auth Models ---
 class LoginRequest(BaseModel):
@@ -281,23 +281,29 @@ def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
 @app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse)
 def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
     """
-    Returns time-series sensor data for a specific experiment.
+    Returns time-series sensor data for a specific experiment, grouped by bucket.
     """
     experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
     
-    # Readings are already linked via relationship
-    # Sort them by timestamp
     readings = db.query(models.DailyReading)\
         .filter(models.DailyReading.experiment_id == experiment_id)\
         .order_by(models.DailyReading.timestamp.asc())\
         .all()
     
+    # Group by bucket_label
+    grouped = {}
+    for r in readings:
+        label = r.bucket_label or "unknown"
+        if label not in grouped:
+            grouped[label] = []
+        grouped[label].append(r)
+    
     return {
         "id": experiment.id,
         "experiment_id": experiment.experiment_id,
-        "history": readings
+        "history": grouped
     }
 
 def generate_recommendation(n, p, k, ph, ec):
