@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from database import get_db, engine, Base
 import models
-from controllers.iot_controller import iot_router, init_iot_controller
+from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing import Optional
@@ -201,16 +201,9 @@ def set_active_experiment(request: ActiveExperimentRequest):
     return {"status": "success", "active_experiment_id": active_experiment_id}
 
 @app.post("/control/active-bucket")
-def set_active_bucket(request: ActiveBucketRequest):
+def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db)):
     """
-    Updates the global active bucket ID.
-    Called by the Mobile App when the user switches nutrient buckets.
-
-    Args:
-        request: An ActiveBucketRequest containing the new bucket_id.
-
-    Returns:
-        A dictionary containing the status, updated active_bucket_id, and a message.
+    Updates the global active bucket ID and ensures a corresponding experiment exists.
     """
     global active_bucket_id
 
@@ -220,13 +213,23 @@ def set_active_bucket(request: ActiveBucketRequest):
 
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
-    else:
-        active_bucket_id = request.bucket_id.value
+        return {
+            "status": "success",
+            "active_bucket_id": None,
+            "message": "System stopped"
+        }
+    
+    # 1. Update in-memory state
+    active_bucket_id = request.bucket_id.value
+
+    # 2. Ensure an experiment exists for this bucket (Auto-Initialization)
+    experiment = resolve_experiment(db, bucket_label=active_bucket_id)
 
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
-        "message": f"Active bucket set to {active_bucket_id}"
+        "experiment_id": experiment.experiment_id,
+        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {experiment.experiment_id}"
     }
 
 @app.post("/auth/login")

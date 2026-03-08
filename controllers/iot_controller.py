@@ -79,49 +79,37 @@ def capture_frame(output_path: str) -> bool:
 
 def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_label: Optional[str] = None) -> models.Experiment:
     """
-    Finds an existing experiment or auto-creates one based on the provided identifiers.
-    Priority: experiment_id > newest bucket_label match > global active_experiment_id > newest experiment.
+    Resolves the experiment to associate data with. 
+    Follows priority: payload experiment_id > global active_experiment_id > auto-generated ID.
+    Ensures an experiment record is created exactly once in the database.
     """
-    experiment = None
+    # 1. Determine the target experiment_id string
+    target_id = None
     
-    # 1. Direct ID match
     if experiment_id:
-        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment_id).first()
-        if not experiment:
-            raise HTTPException(status_code=400, detail=f"Experiment '{experiment_id}' not found.")
+        target_id = experiment_id
+    else:
+        # Check global state (set by Mobile App)
+        target_id = get_active_experiment_id()
     
-    # 2. Bucket label match (newest)
-    if not experiment and bucket_label:
-        experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).order_by(desc(models.Experiment.id)).first()
-    
-    # 3. Global active fallback
-    if not experiment:
-        active_exp_id = get_active_experiment_id()
-        if active_exp_id:
-            experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == active_exp_id).first()
-
-    # 4. Newest experiment fallback
-    if not experiment:
-        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
-
-    # 5. AUTO-CREATE as final fallback
-    if not experiment:
+    if not target_id:
+        # Final fallback: Auto-generated ID based on the bucket label
         label = bucket_label or "NPK"
-        auto_id = f"EXP-{label.upper()}-AUTO"
-        print(f"📦 [resolve_experiment] Auto-creating experiment: {auto_id}")
-        
-        # Check if this auto_id already exists (concurrency safety)
-        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == auto_id).first()
-        
-        if not experiment:
-            experiment = models.Experiment(
-                experiment_id=auto_id,
-                bucket_label=label,
-                start_date=datetime.now().date()
-            )
-            db.add(experiment)
-            db.commit()
-            db.refresh(experiment)
+        target_id = f"EXP-{label.upper()}-AUTO"
+
+    # 2. Find existing record or create once
+    experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == target_id).first()
+    
+    if not experiment:
+        print(f"📦 [resolve_experiment] Creating new experiment record: {target_id}")
+        experiment = models.Experiment(
+            experiment_id=target_id,
+            bucket_label=bucket_label or "NPK",
+            start_date=datetime.now().date()
+        )
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
             
     return experiment
 
