@@ -265,7 +265,7 @@ def create_experiment(experiment: ExperimentCreate, db: Session = Depends(get_db
     db_experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment.experiment_id).first()
     if db_experiment:
         raise HTTPException(status_code=400, detail="Experiment ID already exists")
-    
+
     new_exp = models.Experiment(
         experiment_id=experiment.experiment_id,
         bucket_label=experiment.bucket_label,
@@ -302,20 +302,20 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
     experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    
+
     # Query with eager loading of prediction
     readings = db.query(models.DailyReading)\
         .filter(models.DailyReading.experiment_id == experiment_id)\
         .order_by(models.DailyReading.timestamp.asc())\
         .all()
-    
+
     # Group by bucket_label and extract NPK
     grouped = {}
     for r in readings:
         label = r.bucket_label or "unknown"
         if label not in grouped:
             grouped[label] = []
-        
+
         # Manually construct item to handle the nested prediction relationship
         item = {
             "timestamp": r.timestamp,
@@ -329,7 +329,7 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
             "k": r.prediction.predicted_k if r.prediction else None,
         }
         grouped[label].append(item)
-    
+
     return {
         "id": experiment.id,
         "experiment_id": experiment.experiment_id,
