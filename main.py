@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, date
 from fastapi import FastAPI, Form, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,8 +91,20 @@ class BucketLabel(str, Enum):
 class ActiveBucketRequest(BaseModel):
     bucket_id: BucketLabel
 
-# Ensure tables exist
-Base.metadata.create_all(bind=engine)
+# --- Experiment Models ---
+class ExperimentCreate(BaseModel):
+    experiment_id: str = Field(..., example="EXP-101")
+    bucket_label: Optional[str] = None
+    start_date: Optional[date] = None
+
+class ExperimentResponse(BaseModel):
+    id: int
+    experiment_id: str
+    bucket_label: Optional[str]
+    start_date: Optional[date]
+
+    class Config:
+        from_attributes = True
 
 
 # --- Auth Models ---
@@ -210,6 +222,37 @@ def login(request: LoginRequest):
         }
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+# --- 2. ENDPOINTS FOR EXPERIMENTS ---
+
+@app.post("/experiments/", response_model=ExperimentResponse, status_code=201)
+def create_experiment(experiment: ExperimentCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new experiment.
+    """
+    db_experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment.experiment_id).first()
+    if db_experiment:
+        raise HTTPException(status_code=400, detail="Experiment ID already exists")
+    
+    new_exp = models.Experiment(
+        experiment_id=experiment.experiment_id,
+        bucket_label=experiment.bucket_label,
+        start_date=experiment.start_date
+    )
+    db.add(new_exp)
+    db.commit()
+    db.refresh(new_exp)
+    return new_exp
+
+@app.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
+def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves details of a specific experiment by its internal ID.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
 
 def generate_recommendation(n, p, k, ph, ec):
     """
