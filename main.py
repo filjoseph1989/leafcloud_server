@@ -260,6 +260,14 @@ def create_experiment(experiment: ExperimentCreate, db: Session = Depends(get_db
     db.refresh(new_exp)
     return new_exp
 
+@app.get("/experiments/", response_model=list[ExperimentResponse])
+def list_experiments(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Returns a list of all experiments.
+    """
+    experiments = db.query(models.Experiment).offset(skip).limit(limit).all()
+    return experiments
+
 @app.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
 def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
     """
