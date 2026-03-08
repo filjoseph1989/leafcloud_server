@@ -20,18 +20,26 @@ iot_router = APIRouter(prefix="/iot", tags=["IoT"])
 AI_MODEL = None
 VIDEO_MANAGER = None
 ACTIVE_BUCKET_GETTER = None
+ACTIVE_EXPERIMENT_GETTER = None
 
-def init_iot_controller(model=None, video_manager=None, bucket_getter=None):
+def init_iot_controller(model=None, video_manager=None, bucket_getter=None, experiment_getter=None):
     """Initializes the controller with necessary global state."""
-    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER
+    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER, ACTIVE_EXPERIMENT_GETTER
     AI_MODEL = model
     VIDEO_MANAGER = video_manager
     ACTIVE_BUCKET_GETTER = bucket_getter
+    ACTIVE_EXPERIMENT_GETTER = experiment_getter
 
 def get_active_bucket_id():
     """Helper to get the current global active_bucket_id."""
     if ACTIVE_BUCKET_GETTER:
         return ACTIVE_BUCKET_GETTER()
+    return None
+
+def get_active_experiment_id():
+    """Helper to get the current global active_experiment_id."""
+    if ACTIVE_EXPERIMENT_GETTER:
+        return ACTIVE_EXPERIMENT_GETTER()
     return None
 
 class SensorData(BaseModel):
@@ -40,6 +48,7 @@ class SensorData(BaseModel):
     temperature: float = Field(..., validation_alias=AliasChoices("temp", "temperature", "water_temp"))
     ec: float
     ph: float
+    ph_is_estimated: bool = True
     status: str = "active"
     bucket_id: Optional[str] = None
     experiment_id: Optional[str] = None
@@ -93,14 +102,33 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         if not experiment:
             raise HTTPException(status_code=400, detail=f"Experiment '{data.experiment_id}' not found.")
     else:
+        # Fallback: check global active_experiment_id first
+        active_exp_id = get_active_experiment_id()
+        if active_exp_id:
+            experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == active_exp_id).first()
+        else:
+            experiment = None
+
         # Fallback: newest experiment
-        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
         if not experiment:
-            raise HTTPException(status_code=400, detail="No active experiment found. Create one first.")
+            experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
+        
+        # If still no experiment (clean DB), create a default one
+        if not experiment:
+            print("📦 [create_sensor_data] No experiments found. Creating default 'EXP-DEFAULT'.")
+            experiment = models.Experiment(
+                experiment_id="EXP-DEFAULT",
+                bucket_label="NPK",
+                start_date=datetime.now().date()
+            )
+            db.add(experiment)
+            db.commit()
+            db.refresh(experiment)
 
     new_reading = models.DailyReading(
         experiment_id=experiment.id,
         ph=data.ph,
+        ph_is_estimated=data.ph_is_estimated,
         ec=data.ec,
         water_temp=data.temperature,
         status=data.status,

@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from database import get_db, Base
 import models
+from datetime import date
 from main import app
 from controllers.iot_controller import init_iot_controller
 
@@ -40,6 +41,17 @@ def setup_db():
     if not os.path.exists("images"):
         os.makedirs("images")
     
+    # Create a default experiment so readings can be associated
+    db = TestingSessionLocal()
+    default_exp = models.Experiment(
+        experiment_id="EXP-TEST-DEFAULT",
+        bucket_label="default",
+        start_date=date(2026, 3, 8)
+    )
+    db.add(default_exp)
+    db.commit()
+    db.close()
+
     # Initialize controller with mocks
     init_iot_controller(
         model=None,

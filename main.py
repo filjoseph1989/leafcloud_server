@@ -24,6 +24,7 @@ import threading
 
 # --- Global State ---
 active_bucket_id: Optional[str] = None
+active_experiment_id: Optional[str] = None
 
 # --- Video Management ---
 class VideoManager:
@@ -152,7 +153,8 @@ except Exception as e:
 init_iot_controller(
     model=model,
     video_manager=video_manager,
-    bucket_getter=lambda: active_bucket_id
+    bucket_getter=lambda: active_bucket_id,
+    experiment_getter=lambda: active_experiment_id
 )
 
 app = FastAPI(title="LEAFCLOUD API")
@@ -183,8 +185,22 @@ def get_current_status():
     """
     return {
         "active_bucket_id": active_bucket_id,
+        "active_experiment_id": active_experiment_id,
         "server_time": datetime.now()
     }
+
+class ActiveExperimentRequest(BaseModel):
+    experiment_id: Optional[str]
+
+@app.post("/control/active-experiment")
+def set_active_experiment(request: ActiveExperimentRequest):
+    """
+    Updates the global active experiment ID.
+    Called by the Mobile App when the user starts a new crop cycle.
+    """
+    global active_experiment_id
+    active_experiment_id = request.experiment_id
+    return {"status": "success", "active_experiment_id": active_experiment_id}
 
 @app.post("/control/active-bucket")
 def set_active_bucket(request: ActiveBucketRequest):
