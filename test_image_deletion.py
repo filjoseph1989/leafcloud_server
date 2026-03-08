@@ -52,7 +52,7 @@ def setup_test_env():
     db.refresh(experiment)
     
     reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         ph=6.0,
         ec=1.0,
         water_temp=20.0,

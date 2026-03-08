@@ -10,7 +10,8 @@ class Experiment(Base):
     __tablename__ = "experiments"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_label = Column(String(50))
+    experiment_id = Column(String(50), unique=True, index=True) # e.g. "EXP-001"
+    bucket_label = Column(String(50), nullable=True)
     start_date = Column(Date)
 
     # Relationship
@@ -24,7 +25,7 @@ class DailyReading(Base):
     __tablename__ = "daily_readings"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_id = Column(Integer, ForeignKey("experiments.id"))
+    experiment_id = Column(Integer, ForeignKey("experiments.id"))
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     image_path = Column(String(255))

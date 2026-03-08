@@ -95,7 +95,7 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         db.refresh(experiment)
 
     new_reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         ph=data.ph,
         ec=data.ec,
         water_temp=data.temperature,
@@ -146,7 +146,7 @@ async def upload_from_iot(
 
     # C. Save Sensor Data
     reading = models.DailyReading(
-        bucket_id=experiment.id,
+        experiment_id=experiment.id,
         image_path=file_path,
         ph=ph,
         ec=ec,

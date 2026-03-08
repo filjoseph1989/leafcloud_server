@@ -94,7 +94,7 @@ def seed():
             cv2.imwrite(full_image_path, dummy_img)
             
             reading = DailyReading(
-                bucket_id=experiment.id,
+                experiment_id=experiment.id,
                 timestamp=current_date,
                 image_path=f"images/{image_filename}", # Relative path
                 ph=round(random.uniform(5.8, 6.2), 2),
