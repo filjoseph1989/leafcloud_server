@@ -112,6 +112,9 @@ class ReadingHistoryItem(BaseModel):
     ec: float
     water_temp: float
     bucket_label: Optional[str]
+    n: Optional[float] = None
+    p: Optional[float] = None
+    k: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -281,24 +284,37 @@ def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
 @app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse)
 def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
     """
-    Returns time-series sensor data for a specific experiment, grouped by bucket.
+    Returns time-series sensor data and AI predictions for a specific experiment, grouped by bucket.
     """
     experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
     
+    # Query with eager loading of prediction
     readings = db.query(models.DailyReading)\
         .filter(models.DailyReading.experiment_id == experiment_id)\
         .order_by(models.DailyReading.timestamp.asc())\
         .all()
     
-    # Group by bucket_label
+    # Group by bucket_label and extract NPK
     grouped = {}
     for r in readings:
         label = r.bucket_label or "unknown"
         if label not in grouped:
             grouped[label] = []
-        grouped[label].append(r)
+        
+        # Manually construct item to handle the nested prediction relationship
+        item = {
+            "timestamp": r.timestamp,
+            "ph": r.ph,
+            "ec": r.ec,
+            "water_temp": r.water_temp,
+            "bucket_label": r.bucket_label,
+            "n": r.prediction.predicted_n if r.prediction else None,
+            "p": r.prediction.predicted_p if r.prediction else None,
+            "k": r.prediction.predicted_k if r.prediction else None,
+        }
+        grouped[label].append(item)
     
     return {
         "id": experiment.id,

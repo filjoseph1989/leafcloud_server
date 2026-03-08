@@ -55,13 +55,18 @@ def test_get_experiment_history_success(client):
         bucket_label="NPK",
         timestamp=datetime.now() - timedelta(days=1)
     )
+    # Add a prediction for r1
+    p1 = models.NPKPrediction(
+        daily_reading=r1,
+        predicted_n=100.0, predicted_p=50.0, predicted_k=200.0
+    )
     r2 = models.DailyReading(
         experiment_id=exp_internal_id,
         ph=6.2, ec=1.1, water_temp=21.0,
         bucket_label="NPK",
         timestamp=datetime.now()
     )
-    session.add_all([r1, r2])
+    session.add_all([r1, r2, p1])
     session.commit()
     session.close()
 
@@ -72,7 +77,8 @@ def test_get_experiment_history_success(client):
     assert data["experiment_id"] == "EXP-HIST-01"
     assert "NPK" in data["history"]
     assert len(data["history"]["NPK"]) == 2
-    assert data["history"]["NPK"][0]["ph"] == 6.0
+    assert data["history"]["NPK"][0]["n"] == 100.0
+    assert data["history"]["NPK"][1]["n"] is None
 
 def test_get_experiment_history_not_found(client):
     """Test history for non-existent experiment."""
