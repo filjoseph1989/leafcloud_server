@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, date
-from fastapi import FastAPI, Form, Depends, HTTPException, Header, Request
+from fastapi import FastAPI, Form, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -106,6 +106,20 @@ class ExperimentResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class ReadingHistoryItem(BaseModel):
+    timestamp: datetime
+    ph: float
+    ec: float
+    water_temp: float
+    bucket_label: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+class ExperimentHistoryResponse(BaseModel):
+    id: int
+    experiment_id: str
+    history: list[ReadingHistoryItem]
 
 # --- Auth Models ---
 class LoginRequest(BaseModel):
@@ -225,22 +239,6 @@ def login(request: LoginRequest):
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.get("/test_db")
-def test_db(db: Session = Depends(get_db)):
-    try:
-        count = db.query(models.Experiment).count()
-        return {"status": "ok", "experiment_count": count}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/debug_body")
-async def debug_body(request: Request):
-    try:
-        body = await request.json()
-        return {"body": body}
-    except Exception as e:
-        return {"error": str(e)}
-
 # --- 2. ENDPOINTS FOR EXPERIMENTS ---
 
 @app.post("/experiments/", response_model=ExperimentResponse, status_code=201)
@@ -271,6 +269,28 @@ def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return experiment
+
+@app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse)
+def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Returns time-series sensor data for a specific experiment.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    
+    # Readings are already linked via relationship
+    # Sort them by timestamp
+    readings = db.query(models.DailyReading)\
+        .filter(models.DailyReading.experiment_id == experiment_id)\
+        .order_by(models.DailyReading.timestamp.asc())\
+        .all()
+    
+    return {
+        "id": experiment.id,
+        "experiment_id": experiment.experiment_id,
+        "history": readings
+    }
 
 def generate_recommendation(n, p, k, ph, ec):
     """
