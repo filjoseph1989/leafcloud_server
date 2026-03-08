@@ -30,7 +30,7 @@ class DailyReading(Base):
 
     image_path = Column(String(255))
     ph = Column(Float)
-    ph_is_estimated = Column(Boolean, default=True)
+    ph_is_estimated = Column(Boolean, default=True, server_default=func.true())
     ec = Column(Float)
     water_temp = Column(Float)
     status = Column(String(50), nullable=True, default="active")
