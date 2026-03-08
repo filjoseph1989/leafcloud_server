@@ -11,7 +11,7 @@ from PIL import Image
 
 from database import get_db
 import models
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
@@ -35,15 +35,15 @@ def get_active_bucket_id():
     return None
 
 class SensorData(BaseModel):
-    temperature: float = Field(..., alias="temp", validation_alias="temperature")
+    model_config = ConfigDict(populate_by_name=True)
+
+    temperature: float
     ec: float
     ph: float
     status: str = "active"
     bucket_id: Optional[str] = None
-    timestamp: datetime = None
-
-    class Config:
-        populate_by_name = True
+    experiment_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
 
 def capture_frame(output_path: str) -> bool:
     """
@@ -87,12 +87,15 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Capture failed. Sensor data not recorded.")
 
     # Associate with an experiment
-    experiment = db.query(models.Experiment).first()
-    if not experiment:
-        experiment = models.Experiment(bucket_label="default", start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
+    if data.experiment_id:
+        experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == data.experiment_id).first()
+        if not experiment:
+            raise HTTPException(status_code=400, detail=f"Experiment '{data.experiment_id}' not found.")
+    else:
+        # Fallback: newest experiment
+        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
+        if not experiment:
+            raise HTTPException(status_code=400, detail="No active experiment found. Create one first.")
 
     new_reading = models.DailyReading(
         experiment_id=experiment.id,
@@ -137,12 +140,15 @@ async def upload_from_iot(
         shutil.copyfileobj(image.file, buffer)
 
     # B. Find or Create Experiment
-    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).first()
+    # Note: For now, we search by bucket_label as fallback if no global context, 
+    # but the goal is to link to the newest experiment if bucket matches.
+    experiment = db.query(models.Experiment).filter(models.Experiment.bucket_label == bucket_label).order_by(desc(models.Experiment.id)).first()
     if not experiment:
-        experiment = models.Experiment(bucket_label=bucket_label, start_date=datetime.now().date())
-        db.add(experiment)
-        db.commit()
-        db.refresh(experiment)
+        # Fallback: just newest experiment
+        experiment = db.query(models.Experiment).order_by(desc(models.Experiment.id)).first()
+    
+    if not experiment:
+         raise HTTPException(status_code=400, detail="No active experiment found. Create one first.")
 
     # C. Save Sensor Data
     reading = models.DailyReading(
