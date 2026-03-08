@@ -112,6 +112,7 @@ class ReadingHistoryItem(BaseModel):
     ec: float
     water_temp: float
     bucket_label: Optional[str]
+    image_url: Optional[str] = None
     n: Optional[float] = None
     p: Optional[float] = None
     k: Optional[float] = None
@@ -310,6 +311,7 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
             "ec": r.ec,
             "water_temp": r.water_temp,
             "bucket_label": r.bucket_label,
+            "image_url": f"/images/{os.path.basename(r.image_path)}" if r.image_path else None,
             "n": r.prediction.predicted_n if r.prediction else None,
             "p": r.prediction.predicted_p if r.prediction else None,
             "k": r.prediction.predicted_k if r.prediction else None,

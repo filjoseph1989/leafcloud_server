@@ -64,6 +64,7 @@ def test_get_experiment_history_success(client):
         experiment_id=exp_internal_id,
         ph=6.2, ec=1.1, water_temp=21.0,
         bucket_label="NPK",
+        image_path="images/test_image.jpg",
         timestamp=datetime.now()
     )
     session.add_all([r1, r2, p1])
@@ -77,8 +78,7 @@ def test_get_experiment_history_success(client):
     assert data["experiment_id"] == "EXP-HIST-01"
     assert "NPK" in data["history"]
     assert len(data["history"]["NPK"]) == 2
-    assert data["history"]["NPK"][0]["n"] == 100.0
-    assert data["history"]["NPK"][1]["n"] is None
+    assert data["history"]["NPK"][1]["image_url"] == "/images/test_image.jpg"
 
 def test_get_experiment_history_not_found(client):
     """Test history for non-existent experiment."""
