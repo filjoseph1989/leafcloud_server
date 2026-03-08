@@ -184,7 +184,7 @@ def get_current_status():
     return {
         "active_bucket_id": active_bucket_id,
         "active_experiment_id": active_experiment_id,
-        "server_time": datetime.now()
+        "server_time": datetime.now().isoformat()
     }
 
 class ActiveExperimentRequest(BaseModel):
