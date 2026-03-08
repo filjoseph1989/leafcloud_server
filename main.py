@@ -269,7 +269,7 @@ async def video_feed():
                 ret, buffer = cv2.imencode('.jpg', frame)
                 if ret:
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                      b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
                 # Sleep briefly to avoid high CPU usage while waiting
                 time.sleep(1.0)
@@ -465,7 +465,7 @@ def list_images(
     db: Session = Depends(get_db)
 ):
     """
-    Returns a list of images from the images/ directory, 
+    Returns a list of images from the images/ directory,
     synced with database metadata from DailyReading.
     """
     image_dir = "images"
@@ -474,17 +474,17 @@ def list_images(
 
     # 1. Get all image files from disk
     files = sorted([f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))], reverse=True)
-    
+
     # Apply pagination to file list first to avoid massive DB queries
     paginated_files = files[skip : skip + limit]
-    
+
     # 2. Query DB for these specific files
     # We look for image_path that contains the filename
     results = []
     for filename in paginated_files:
         # Search for record where image_path contains this filename
         reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}%")).first()
-        
+
         if reading:
             results.append(ImageInfo(
                 filename=filename,
@@ -500,7 +500,7 @@ def list_images(
                 image_url=f"/images/{filename}",
                 is_orphaned=True
             ))
-            
+
     return results
 
 @app.delete("/admin/images/{filename:path}")
@@ -524,7 +524,7 @@ def delete_image(
     image_dir = "images"
     if "/" in clean_filename or "\\" in clean_filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-        
+
     file_path = os.path.join(image_dir, clean_filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
@@ -532,7 +532,7 @@ def delete_image(
     # 4. Database Cleanup (if record exists)
     # Search for record where image_path contains this filename
     reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{clean_filename}")).first()
-    
+
     if reading:
         db.query(models.NPKPrediction).filter(models.NPKPrediction.daily_reading_id == reading.id).delete()
         db.delete(reading)
