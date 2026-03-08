@@ -20,41 +20,41 @@ def db():
         db.close()
         Base.metadata.drop_all(bind=engine)
 
-def test_experiment_creation(db):
-    """Test creating a new experiment with its ID and relationships."""
+def test_create_experiment(db):
     new_exp = models.Experiment(
-        experiment_id="EXP-001",
-        bucket_label="NPK-Bucket-1",
-        start_date=date.today()
+        experiment_id="EXP-2026-001",
+        bucket_label="BucketA-Balanced",
+        start_date=date(2026, 3, 8)
     )
     db.add(new_exp)
     db.commit()
     db.refresh(new_exp)
     
     assert new_exp.id is not None
-    assert new_exp.experiment_id == "EXP-001"
-    assert new_exp.bucket_label == "NPK-Bucket-1"
+    assert new_exp.experiment_id == "EXP-2026-001"
+    assert new_exp.bucket_label == "BucketA-Balanced"
+    assert new_exp.start_date == date(2026, 3, 8)
 
-def test_daily_reading_association(db):
-    """Test linking a DailyReading to an Experiment."""
+def test_experiment_reading_relationship(db):
     new_exp = models.Experiment(
-        experiment_id="EXP-002",
-        start_date=date.today()
+        experiment_id="EXP-2026-002",
+        bucket_label="BucketB-LowN",
+        start_date=date(2026, 3, 8)
     )
     db.add(new_exp)
     db.commit()
-    db.refresh(new_exp)
     
     new_reading = models.DailyReading(
         experiment_id=new_exp.id,
         ph=6.0,
         ec=1.2,
-        water_temp=21.0
+        water_temp=21.5,
+        bucket_label="NPK"
     )
     db.add(new_reading)
     db.commit()
-    db.refresh(new_reading)
+    db.refresh(new_exp)
     
-    assert new_reading.experiment_id == new_exp.id
     assert len(new_exp.readings) == 1
-    assert new_exp.readings[0].id == new_reading.id
+    assert new_exp.readings[0].ph == 6.0
+    assert new_exp.readings[0].experiment.experiment_id == "EXP-2026-002"

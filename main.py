@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from database import get_db, engine, Base
 import models
 from controllers.iot_controller import iot_router, init_iot_controller
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing import Optional
 
@@ -98,15 +98,16 @@ class ExperimentCreate(BaseModel):
     start_date: Optional[date] = None
 
 class ExperimentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
-    experiment_id: str
-    bucket_label: Optional[str]
+    experiment_id: Optional[str] = None
+    bucket_label: Optional[str] = None
     start_date: Optional[date]
 
-    class Config:
-        from_attributes = True
-
 class ReadingHistoryItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     timestamp: datetime
     ph: float
     ec: float
@@ -116,9 +117,6 @@ class ReadingHistoryItem(BaseModel):
     n: Optional[float] = None
     p: Optional[float] = None
     k: Optional[float] = None
-
-    class Config:
-        from_attributes = True
 
 class ExperimentHistoryResponse(BaseModel):
     id: int
@@ -169,8 +167,6 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 # --- Lifecycle Events ---
 @app.on_event("startup")
 async def startup_event():
-    # Ensure tables exist (fail-safe if migrations weren't run)
-    Base.metadata.create_all(bind=engine)
     video_manager.start()
 
 @app.on_event("shutdown")
