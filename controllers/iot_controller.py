@@ -48,6 +48,9 @@ class SensorData(BaseModel):
     temperature: float = Field(..., validation_alias=AliasChoices("temp", "temperature", "water_temp"))
     ec: float
     ph: float
+    # ph_is_estimated: Boolean flag indicating if the pH was simulated (True) 
+    # or measured from physical hardware (False). This is part of the Hybrid Data Strategy
+    # implemented to bypass the ADC hardware bottleneck for the capstone defense.
     ph_is_estimated: bool = True
     status: str = "active"
     bucket_id: Optional[str] = None
