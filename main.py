@@ -25,6 +25,7 @@ import threading
 # --- Global State ---
 active_bucket_id: Optional[str] = None
 active_experiment_id: Optional[str] = None
+restart_requested: bool = False
 
 # --- Video Management ---
 class VideoManager:
@@ -184,8 +185,33 @@ def get_current_status():
     return {
         "active_bucket_id": active_bucket_id,
         "active_experiment_id": active_experiment_id,
+        "restart_requested": restart_requested,
         "server_time": datetime.now().isoformat()
     }
+
+@app.post("/control/restart-iot")
+def restart_iot():
+    """
+    Sets the global restart flag and restarts the VideoManager.
+    Called by the Mobile App.
+    """
+    global restart_requested
+    restart_requested = True
+    print("⚠️ Restart requested by mobile app. Resetting VideoManager...")
+    video_manager.stop()
+    video_manager.start()
+    return {"status": "success", "restart_requested": True}
+
+@app.post("/control/acknowledge-restart")
+def acknowledge_restart():
+    """
+    Clears the global restart flag.
+    Called by the IoT device.
+    """
+    global restart_requested
+    restart_requested = False
+    print("✅ Restart acknowledged by IoT device. Flag reset.")
+    return {"status": "success", "restart_requested": False}
 
 class ActiveExperimentRequest(BaseModel):
     experiment_id: Optional[str]
@@ -295,7 +321,7 @@ def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Experiment not found")
     return experiment
 
-@app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse)
+@app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse, response_model_exclude_none=True)
 def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
     """
     Returns time-series sensor data and AI predictions for a specific experiment, grouped by bucket.
