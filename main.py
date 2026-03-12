@@ -135,6 +135,7 @@ class ImageInfo(BaseModel):
     timestamp: Optional[datetime] = None
     image_url: str
     is_orphaned: bool = False
+    bucket_label: Optional[str] = None
 
 
 # Load AI Brain (Mock loader for now if file doesn't exist)
@@ -629,20 +630,57 @@ def list_images(
     # Apply pagination to file list first to avoid massive DB queries
     paginated_files = files[skip : skip + limit]
 
-    # 2. Query DB for these specific files
-    # We look for image_path that contains the filename
+    # 2. Query DB for these specific files in a single batch
+    # We build a list of patterns for the LIKE query, or better, we look for matches
+    # since we have the filenames. 
+    # NOTE: In production with many files, we might want to store just the filename 
+    # in a separate indexed column.
+    
+    # Fetch all readings that match any of the paginated files
+    # We use a join with Experiment to get the bucket_label in one go
+    from sqlalchemy.orm import joinedload
+    
+    # Create a mapping of filename -> reading for quick lookup
+    readings_map = {}
+    
+    # We can optimize the search by looking for image_path that ends with the filename
+    # However, for a batch of 50, a simple loop with a slightly better query is okay,
+    # but let's try to get as many as possible in one or two queries.
+    
+    # To keep it simple and robust, we'll fetch all readings that might match
+    # and then filter in memory. This is still much faster than N queries.
+    if not paginated_files:
+        all_matching_readings = []
+    elif db.bind.dialect.name == "postgresql":
+        all_matching_readings = db.query(models.DailyReading)\
+            .options(joinedload(models.DailyReading.experiment))\
+            .filter(models.DailyReading.image_path.op('~')('|'.join(paginated_files)))\
+            .all()
+    else:
+        # Fallback for SQLite and others: Batch using multiple OR LIKE conditions
+        from sqlalchemy import or_
+        filters = [models.DailyReading.image_path.like(f"%{f}%") for f in paginated_files]
+        all_matching_readings = db.query(models.DailyReading)\
+            .options(joinedload(models.DailyReading.experiment))\
+            .filter(or_(*filters))\
+            .all()
+
+    for r in all_matching_readings:
+        for f in paginated_files:
+            if f in r.image_path:
+                readings_map[f] = r
+
     results = []
     for filename in paginated_files:
-        # Search for record where image_path contains this filename
-        reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}%")).first()
-
+        reading = readings_map.get(filename)
         if reading:
             results.append(ImageInfo(
                 filename=filename,
                 reading_id=reading.id,
                 timestamp=reading.timestamp,
                 image_url=f"/images/{filename}",
-                is_orphaned=False
+                is_orphaned=False,
+                bucket_label=reading.experiment.bucket_label if reading.experiment else None
             ))
         else:
             results.append(ImageInfo(
