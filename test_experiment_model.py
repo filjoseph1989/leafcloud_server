@@ -48,8 +48,7 @@ def test_experiment_reading_relationship(db):
         experiment_id=new_exp.id,
         ph=6.0,
         ec=1.2,
-        water_temp=21.5,
-        bucket_label="NPK"
+        water_temp=21.5
     )
     db.add(new_reading)
     db.commit()
