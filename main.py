@@ -8,6 +8,8 @@ from sqlalchemy import desc
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
+import socket
+from urllib.parse import urlparse
 
 from database import get_db, engine, Base
 import models
@@ -44,16 +46,48 @@ class VideoManager:
             self.running = True
             self.thread = threading.Thread(target=self._worker, daemon=True)
             self.thread.start()
-            print(f"📹 Video Manager started for {self.source_url}")
+            print(f"📹 Video Manager: Starting for {self.source_url}")
 
     def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=2.0)
-            print("📹 Video Manager stopped.")
+        if self.running:
+            self.running = False
+            print("📹 Video Manager: Stop signal sent.")
+            # We don't join with timeout here to avoid blocking the main thread if OpenCV is hung
+            # The worker will eventually exit when the timeout hits or next loop starts
+
+    def _is_reachable(self, url: str) -> bool:
+        """
+        Quickly check if the stream host/port is reachable to avoid OpenCV's 30s hang.
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            port = parsed.port
+            
+            if not host or not port:
+                return False
+
+            # Use a short 1s timeout for the reachability check
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except (socket.timeout, socket.error, ValueError):
+            return False
 
     def _worker(self):
         while self.running:
+            # Skip reachability check for UDP unless we want more complexity, 
+            # but for UDP 0.0.0.0, we just skip it entirely if it's the dummy address.
+            if "0.0.0.0" in self.source_url or not self.source_url:
+                print(f"⚠️ Video Manager: Invalid or dummy URL '{self.source_url}'. Sleeping...")
+                time.sleep(5.0)
+                continue
+
+            # Only attempt connection if reachable
+            if not self._is_reachable(self.source_url):
+                print(f"⚠️ Video Manager: {self.source_url} not reachable. Retrying in 5s...")
+                time.sleep(5.0)
+                continue
+
             print(f"📹 Video Manager: Attempting to connect to {self.source_url}")
             cap = cv2.VideoCapture(self.source_url)
             if not cap.isOpened():

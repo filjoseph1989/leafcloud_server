@@ -24,6 +24,13 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
+        
+        # Mutual Exclusion: Stop camera if this is the first pH stream client
+        if len(self.active_connections) == 0:
+            if VIDEO_MANAGER:
+                print("🔒 pH Stream Active: Stopping Video Manager to prioritize resources.")
+                VIDEO_MANAGER.stop()
+        
         self.active_connections.append(websocket)
         print(f"🔌 New WS connection. Total: {len(self.active_connections)}")
 
@@ -31,6 +38,12 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
             print(f"🔌 WS disconnected. Total: {len(self.active_connections)}")
+            
+            # Mutual Exclusion: Restart camera if NO MORE pH stream clients
+            if len(self.active_connections) == 0:
+                if VIDEO_MANAGER:
+                    print("🔓 pH Stream Inactive: Restarting Video Manager.")
+                    VIDEO_MANAGER.start()
 
     async def broadcast(self, message: dict):
         for connection in self.active_connections:
