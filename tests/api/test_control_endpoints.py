@@ -1,11 +1,13 @@
 import pytest
-from fastapi.testclient import TestClient
-from main import app
+import main
 
-@pytest.fixture
-def client():
-    with TestClient(app) as c:
-        yield c
+@pytest.fixture(autouse=True)
+def reset_globals():
+    main.active_bucket_id = None
+    main.active_experiment_id = None
+    yield
+    main.active_bucket_id = None
+    main.active_experiment_id = None
 
 def test_get_current_status_initial(client):
     """
