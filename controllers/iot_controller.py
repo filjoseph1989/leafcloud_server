@@ -3,11 +3,12 @@ import shutil
 import cv2
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import numpy as np
 from PIL import Image
+from typing import List
 
 from database import get_db
 import models
@@ -15,6 +16,31 @@ from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
+
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"🔌 New WS connection. Total: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            print(f"🔌 WS disconnected. Total: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                print(f"⚠️ Failed to send WS message: {e}")
+                # Optional: handle stale connections here
+
+manager = ConnectionManager()
 
 # Internal references that will be injected or accessed globally
 AI_MODEL = None
@@ -56,6 +82,62 @@ class SensorData(BaseModel):
     bucket_id: Optional[str] = None
     experiment_id: Optional[str] = None
     timestamp: Optional[datetime] = None
+
+class PHReading(BaseModel):
+    timestamp: datetime
+    raw_adc: int
+    voltage: float
+
+class PHLogPayload(BaseModel):
+    device_id: str
+    readings: list[PHReading]
+
+@iot_router.post("/logs")
+async def create_ph_logs(payload: PHLogPayload):
+    """
+    Receives batched pH sensor data, logs it to a file, and broadcasts it.
+    """
+    os.makedirs("logs", exist_ok=True)
+    log_file = "logs/ph_sensor.log"
+    
+    try:
+        # 1. Log to file
+        with open(log_file, "a") as f:
+            for reading in payload.readings:
+                log_entry = (
+                    f"{reading.timestamp.isoformat()} | "
+                    f"device:{payload.device_id} | "
+                    f"adc:{reading.raw_adc} | "
+                    f"voltage:{reading.voltage:.4f}V\n"
+                )
+                f.write(log_entry)
+        
+        # 2. Broadcast to connected clients
+        # We broadcast the JSON-serializable version of the payload
+        await manager.broadcast(payload.model_dump(mode="json"))
+        
+        return {"status": "success", "message": f"Logged {len(payload.readings)} readings from {payload.device_id}"}
+    except Exception as e:
+        print(f"❌ Error logging/broadcasting pH data: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@iot_router.websocket("/ph/stream")
+async def websocket_ph_stream(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time pH log streaming.
+    """
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive by waiting for any message (or just use a ping/pong)
+            # In this case, we're just broadcasting FROM the server, so we only need to wait 
+            # to know when they disconnect.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"⚠️ WS Stream error: {e}")
+        manager.disconnect(websocket)
 
 def capture_frame(output_path: str) -> bool:
     """

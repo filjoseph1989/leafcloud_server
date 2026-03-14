@@ -100,3 +100,7 @@ pytest --cov=main --cov=models
 
 ## 🧠 AI Features
 The server includes a MobileNetV2-based brain that classifies lettuce growth stages and provides recommendations. If the model file (`leafcloud_mobilenetv2_model.h5`) is missing, the server will fall back to dummy predictions for development.
+
+```sql
+pg_dump -U fil leafcloud > leafcloud_backup_$(date +%Y%m%d_%H%M%S).sql 
+```
