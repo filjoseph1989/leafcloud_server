@@ -28,6 +28,7 @@ import threading
 active_bucket_id: Optional[str] = None
 active_experiment_id: Optional[str] = None
 restart_requested: bool = False
+ph_update_requested: bool = False
 
 # --- Video Management ---
 class VideoManager:
@@ -221,8 +222,31 @@ def get_current_status():
         "active_bucket_id": active_bucket_id,
         "active_experiment_id": active_experiment_id,
         "restart_requested": restart_requested,
+        "ph_update_requested": ph_update_requested,
         "server_time": datetime.now().isoformat()
     }
+
+@app.post("/control/request-ph-update")
+def request_ph_update():
+    """
+    Sets the global pH update request flag.
+    Called by the Mobile App.
+    """
+    global ph_update_requested
+    ph_update_requested = True
+    print("🔔 pH update requested by mobile app.")
+    return {"status": "success", "ph_update_requested": True}
+
+@app.post("/control/acknowledge-ph-update")
+def acknowledge_ph_update():
+    """
+    Clears the global pH update request flag.
+    Called by the IoT device.
+    """
+    global ph_update_requested
+    ph_update_requested = False
+    print("✅ pH update acknowledged by IoT device. Flag reset.")
+    return {"status": "success", "ph_update_requested": False}
 
 @app.post("/control/restart-iot")
 def restart_iot():
