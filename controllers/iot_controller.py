@@ -280,6 +280,7 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
         experiment_id=experiment.id,
         ph=data.ph,
         ph_is_estimated=data.ph_is_estimated,
+        needs_ph_update=True,
         ec=data.ec,
         water_temp=data.temperature,
         status=data.status,
@@ -326,6 +327,8 @@ async def upload_from_iot(
         experiment_id=experiment.id,
         image_path=file_path,
         ph=ph,
+        ph_is_estimated=True,  # This endpoint always starts as estimated
+        needs_ph_update=True,
         ec=ec,
         water_temp=temp
     )
