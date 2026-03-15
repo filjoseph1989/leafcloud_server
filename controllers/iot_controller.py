@@ -144,7 +144,9 @@ async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = 
     and updates it with the provided value.
     """
     # 1. Find the experiment
-    experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment_id).first()
+    experiment = db.query(models.Experiment)\
+        .filter(models.Experiment.experiment_id == experiment_id)\
+        .first()
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
 
@@ -156,7 +158,10 @@ async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = 
         .first()
 
     if not reading:
-        raise HTTPException(status_code=404, detail="No pending pH updates for this experiment")
+        raise HTTPException(
+            status_code=404,
+            detail="No pending pH updates for this experiment"
+        )
 
     # 3. Update the reading
     old_ph = reading.ph
@@ -167,7 +172,10 @@ async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = 
     db.commit()
     db.refresh(reading)
 
-    print(f"✅ [update_ph] Updated reading ID {reading.id} for experiment {experiment_id}: {old_ph} -> {payload.ph}")
+    print(
+        f"✅ [update_ph] Updated reading ID {reading.id} for "
+        f"experiment {experiment_id}: {old_ph} -> {payload.ph}"
+    )
 
     return {
         "status": "success",
