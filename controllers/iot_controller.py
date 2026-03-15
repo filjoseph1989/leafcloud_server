@@ -105,6 +105,9 @@ class PHLogPayload(BaseModel):
     device_id: str
     readings: list[PHReading]
 
+class PHUpdatePayload(BaseModel):
+    ph: float
+
 @iot_router.post("/logs")
 async def create_ph_logs(payload: PHLogPayload):
     """
@@ -133,6 +136,46 @@ async def create_ph_logs(payload: PHLogPayload):
     except Exception as e:
         print(f"❌ Error logging/broadcasting pH data: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@iot_router.post("/experiments/{experiment_id}/update-ph")
+async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = Depends(get_db)):
+    """
+    Finds the oldest reading for the given experiment that needs a pH update,
+    and updates it with the provided value.
+    """
+    # 1. Find the experiment
+    experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    # 2. Find the oldest pending reading
+    reading = db.query(models.DailyReading)\
+        .filter(models.DailyReading.experiment_id == experiment.id)\
+        .filter(models.DailyReading.needs_ph_update == True)\
+        .order_by(models.DailyReading.timestamp.asc())\
+        .first()
+
+    if not reading:
+        raise HTTPException(status_code=404, detail="No pending pH updates for this experiment")
+
+    # 3. Update the reading
+    old_ph = reading.ph
+    reading.ph = payload.ph
+    reading.ph_is_estimated = False
+    reading.needs_ph_update = False
+    
+    db.commit()
+    db.refresh(reading)
+
+    print(f"✅ [update_ph] Updated reading ID {reading.id} for experiment {experiment_id}: {old_ph} -> {payload.ph}")
+
+    return {
+        "status": "success",
+        "updated_reading_id": reading.id,
+        "old_ph": old_ph,
+        "new_ph": reading.ph,
+        "experiment_id": experiment_id
+    }
 
 @iot_router.websocket("/ph/stream")
 async def websocket_ph_stream(websocket: WebSocket):
