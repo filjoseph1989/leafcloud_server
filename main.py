@@ -76,15 +76,17 @@ class VideoManager:
 
     def _worker(self):
         while self.running:
-            # Skip reachability check for UDP unless we want more complexity, 
-            # but for UDP 0.0.0.0, we just skip it entirely if it's the dummy address.
-            if "0.0.0.0" in self.source_url or not self.source_url:
-                print(f"⚠️ Video Manager: Invalid or dummy URL '{self.source_url}'. Sleeping...")
+            # For UDP listeners (0.0.0.0), we skip the reachability check because 
+            # it's a local bind, not a remote connection.
+            is_udp_listener = "udp://" in self.source_url and "0.0.0.0" in self.source_url
+
+            if not self.source_url:
+                print("⚠️ Video Manager: No source URL provided. Sleeping...")
                 time.sleep(5.0)
                 continue
 
-            # Only attempt connection if reachable
-            if not self._is_reachable(self.source_url):
+            # Only perform reachability check for remote streams (not 0.0.0.0 listeners)
+            if not is_udp_listener and not self._is_reachable(self.source_url):
                 print(f"⚠️ Video Manager: {self.source_url} not reachable. Retrying in 5s...")
                 time.sleep(5.0)
                 continue
