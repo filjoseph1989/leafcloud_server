@@ -12,6 +12,7 @@ LEAFCLOUD API is a production-grade backend for the LEAFCLOUD system, designed t
 
 ## Core Features
 - **IoT Data Integration:** Endpoint for uploading batched sensor data (pH, EC, Water Temperature) and plant images, with support for centralized logging.
+- **Data Correction API:** Manual pH override endpoint to correct estimated values from IoT devices with high-precision measurements, following a FIFO logic per experiment.
 - **Experiment Management:** Organize data into specific crop cycles (e.g., "Lettuce Batch Oct 2026") using standard `EXP-XXX` identifiers, with data grouped by functional buckets (NPK, Micro, Mixed, Water). Includes server-side auto-initialization of experiments for zero-config IoT data ingestion.
 - **Bucket Control System:** Manage and track active nutrient buckets (NPK, Micro, Mix, Water) for precise sensor data attribution.
 - **AI-Driven Prediction:** Automated NPK (Nitrogen, Phosphorus, Potassium) levels estimation from image data using a MobileNetV2-based model.
