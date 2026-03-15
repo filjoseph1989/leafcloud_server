@@ -40,8 +40,11 @@ class ConnectionManager:
             print(f"🔌 WS disconnected. Total: {len(self.active_connections)}")
             
             # Mutual Exclusion: Restart camera if NO MORE pH stream clients
+            # BUT only if pH update is no longer requested globally.
             if len(self.active_connections) == 0:
-                if VIDEO_MANAGER:
+                if is_ph_update_requested():
+                    print("🔒 pH Update STILL Requested globally. Keeping Video Manager stopped.")
+                elif VIDEO_MANAGER:
                     print("🔓 pH Stream Inactive: Restarting Video Manager.")
                     VIDEO_MANAGER.start()
 
@@ -60,26 +63,34 @@ AI_MODEL = None
 VIDEO_MANAGER = None
 ACTIVE_BUCKET_GETTER = None
 ACTIVE_EXPERIMENT_GETTER = None
+PH_UPDATE_REQUESTED_GETTER = None
 
-def init_iot_controller(model=None, video_manager=None, bucket_getter=None, experiment_getter=None):
+def init_iot_controller(model=None, video_manager=None, bucket_getter=None, experiment_getter=None, ph_update_getter=None):
     """Initializes the controller with necessary global state."""
-    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER, ACTIVE_EXPERIMENT_GETTER
+    global AI_MODEL, VIDEO_MANAGER, ACTIVE_BUCKET_GETTER, ACTIVE_EXPERIMENT_GETTER, PH_UPDATE_REQUESTED_GETTER
     AI_MODEL = model
     VIDEO_MANAGER = video_manager
     ACTIVE_BUCKET_GETTER = bucket_getter
     ACTIVE_EXPERIMENT_GETTER = experiment_getter
+    PH_UPDATE_REQUESTED_GETTER = ph_update_getter
 
-def get_active_bucket_id():
+def get_active_bucket_id() -> Optional[str]:
     """Helper to get the current global active_bucket_id."""
     if ACTIVE_BUCKET_GETTER:
         return ACTIVE_BUCKET_GETTER()
     return None
 
-def get_active_experiment_id():
+def get_active_experiment_id() -> Optional[str]:
     """Helper to get the current global active_experiment_id."""
     if ACTIVE_EXPERIMENT_GETTER:
         return ACTIVE_EXPERIMENT_GETTER()
     return None
+
+def is_ph_update_requested() -> bool:
+    """Helper to check if pH update is requested."""
+    if PH_UPDATE_REQUESTED_GETTER:
+        return PH_UPDATE_REQUESTED_GETTER()
+    return False
 
 class SensorData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)

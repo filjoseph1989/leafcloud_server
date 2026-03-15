@@ -191,7 +191,8 @@ init_iot_controller(
     model=model,
     video_manager=video_manager,
     bucket_getter=lambda: active_bucket_id,
-    experiment_getter=lambda: active_experiment_id
+    experiment_getter=lambda: active_experiment_id,
+    ph_update_getter=lambda: ph_update_requested
 )
 
 app = FastAPI(title="LEAFCLOUD API")
@@ -236,7 +237,8 @@ def request_ph_update():
     """
     global ph_update_requested
     ph_update_requested = True
-    print("🔔 pH update requested by mobile app.")
+    print("🔔 pH update requested by mobile app. Stopping VideoManager.")
+    video_manager.stop()
     return {"status": "success", "ph_update_requested": True}
 
 @app.post("/control/acknowledge-ph-update")
@@ -247,7 +249,8 @@ def acknowledge_ph_update():
     """
     global ph_update_requested
     ph_update_requested = False
-    print("✅ pH update acknowledged by IoT device. Flag reset.")
+    print("✅ pH update acknowledged by IoT device. Flag reset. Restarting VideoManager.")
+    video_manager.start()
     return {"status": "success", "ph_update_requested": False}
 
 @app.post("/control/restart-iot")
