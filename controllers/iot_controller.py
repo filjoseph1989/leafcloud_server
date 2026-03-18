@@ -66,42 +66,8 @@ class SensorData(BaseModel):
     experiment_id: Optional[str] = None
     timestamp: Optional[datetime] = None
 
-class PHReading(BaseModel):
-    timestamp: datetime
-    raw_adc: int
-    voltage: float
-
-class PHLogPayload(BaseModel):
-    device_id: str
-    readings: list[PHReading]
-
 class PHUpdatePayload(BaseModel):
     ph: float
-
-@iot_router.post("/logs")
-async def create_ph_logs(payload: PHLogPayload):
-    """
-    Receives batched pH sensor data and logs it to a file.
-    """
-    os.makedirs("logs", exist_ok=True)
-    log_file = "logs/ph_sensor.log"
-    
-    try:
-        # 1. Log to file
-        with open(log_file, "a") as f:
-            for reading in payload.readings:
-                log_entry = (
-                    f"{reading.timestamp.isoformat()} | "
-                    f"device:{payload.device_id} | "
-                    f"adc:{reading.raw_adc} | "
-                    f"voltage:{reading.voltage:.4f}V\n"
-                )
-                f.write(log_entry)
-        
-        return {"status": "success", "message": f"Logged {len(payload.readings)} readings from {payload.device_id}"}
-    except Exception as e:
-        print(f"❌ Error logging pH data: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @iot_router.post("/experiments/{experiment_id}/update-ph")
 async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = Depends(get_db)):
@@ -251,7 +217,8 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     return {
         "status": "success",
         "reading_id": new_reading.id,
-        "experiment_id": experiment_id
+        "experiment_id": experiment.experiment_id,
+        "image_path": image_path
     }
 
 @iot_router.post("/upload_data/")
