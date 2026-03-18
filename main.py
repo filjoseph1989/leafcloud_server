@@ -295,7 +295,7 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
     """
     Updates the global active bucket ID and ensures a corresponding experiment exists.
     """
-    global active_bucket_id
+    global active_bucket_id, active_experiment_id
 
     # Log request to file for easier debugging
     with open("control_requests.log", "a") as f:
@@ -303,6 +303,7 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
 
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
+        active_experiment_id = None
         return {
             "status": "success",
             "active_bucket_id": None,
@@ -314,12 +315,13 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
 
     # 2. Ensure an experiment exists for this bucket (Auto-Initialization)
     experiment = resolve_experiment(db, bucket_label=active_bucket_id)
+    active_experiment_id = experiment.experiment_id
 
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
-        "experiment_id": experiment.experiment_id,
-        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {experiment.experiment_id}"
+        "experiment_id": active_experiment_id,
+        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {active_experiment_id}"
     }
 
 @app.post("/auth/login")

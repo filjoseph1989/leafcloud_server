@@ -3,7 +3,7 @@ import shutil
 import cv2
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import numpy as np
@@ -16,47 +16,6 @@ from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
-
-# WebSocket Connection Manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        
-        # Mutual Exclusion: Stop camera if this is the first pH stream client
-        if len(self.active_connections) == 0:
-            if VIDEO_MANAGER:
-                print("🔒 pH Stream Active: Stopping Video Manager to prioritize resources.")
-                VIDEO_MANAGER.stop()
-        
-        self.active_connections.append(websocket)
-        print(f"🔌 New WS connection. Total: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            print(f"🔌 WS disconnected. Total: {len(self.active_connections)}")
-            
-            # Mutual Exclusion: Restart camera if NO MORE pH stream clients
-            # BUT only if pH update is no longer requested globally.
-            if len(self.active_connections) == 0:
-                if is_ph_update_requested():
-                    print("🔒 pH Update STILL Requested globally. Keeping Video Manager stopped.")
-                elif VIDEO_MANAGER:
-                    print("🔓 pH Stream Inactive: Restarting Video Manager.")
-                    VIDEO_MANAGER.start()
-
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except Exception as e:
-                print(f"⚠️ Failed to send WS message: {e}")
-                # Optional: handle stale connections here
-
-manager = ConnectionManager()
 
 # Internal references that will be injected or accessed globally
 AI_MODEL = None
@@ -122,7 +81,7 @@ class PHUpdatePayload(BaseModel):
 @iot_router.post("/logs")
 async def create_ph_logs(payload: PHLogPayload):
     """
-    Receives batched pH sensor data, logs it to a file, and broadcasts it.
+    Receives batched pH sensor data and logs it to a file.
     """
     os.makedirs("logs", exist_ok=True)
     log_file = "logs/ph_sensor.log"
@@ -139,13 +98,9 @@ async def create_ph_logs(payload: PHLogPayload):
                 )
                 f.write(log_entry)
         
-        # 2. Broadcast to connected clients
-        # We broadcast the JSON-serializable version of the payload
-        await manager.broadcast(payload.model_dump(mode="json"))
-        
         return {"status": "success", "message": f"Logged {len(payload.readings)} readings from {payload.device_id}"}
     except Exception as e:
-        print(f"❌ Error logging/broadcasting pH data: {e}")
+        print(f"❌ Error logging pH data: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @iot_router.post("/experiments/{experiment_id}/update-ph")
@@ -195,24 +150,6 @@ async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = 
         "new_ph": reading.ph,
         "experiment_id": experiment_id
     }
-
-@iot_router.websocket("/ph/stream")
-async def websocket_ph_stream(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time pH log streaming.
-    """
-    await manager.connect(websocket)
-    try:
-        while True:
-            # Keep connection alive by waiting for any message (or just use a ping/pong)
-            # In this case, we're just broadcasting FROM the server, so we only need to wait 
-            # to know when they disconnect.
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception as e:
-        print(f"⚠️ WS Stream error: {e}")
-        manager.disconnect(websocket)
 
 def capture_frame(output_path: str) -> bool:
     """
@@ -314,8 +251,7 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     return {
         "status": "success",
         "reading_id": new_reading.id,
-        "experiment_id": experiment.experiment_id,
-        "image_path": image_path
+        "experiment_id": experiment_id
     }
 
 @iot_router.post("/upload_data/")
