@@ -69,35 +69,6 @@ class SensorData(BaseModel):
 class PHUpdatePayload(BaseModel):
     ph: float
 
-@iot_router.post("/logs")
-async def create_ph_logs(payload: PHLogPayload):
-    """
-    Receives batched pH sensor data, logs it to a file, and broadcasts it.
-    """
-    os.makedirs("logs", exist_ok=True)
-    log_file = "logs/ph_sensor.log"
-
-    try:
-        # 1. Log to file
-        with open(log_file, "a") as f:
-            for reading in payload.readings:
-                log_entry = (
-                    f"{reading.timestamp.isoformat()} | "
-                    f"device:{payload.device_id} | "
-                    f"adc:{reading.raw_adc} | "
-                    f"voltage:{reading.voltage:.4f}V\n"
-                )
-                f.write(log_entry)
-
-        # 2. Broadcast to connected clients
-        # We broadcast the JSON-serializable version of the payload
-        await manager.broadcast(payload.model_dump(mode="json"))
-
-        return {"status": "success", "message": f"Logged {len(payload.readings)} readings from {payload.device_id}"}
-    except Exception as e:
-        print(f"❌ Error logging/broadcasting pH data: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @iot_router.post("/ping")
 async def ping_pi(data: dict):
     """

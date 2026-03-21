@@ -8,6 +8,7 @@ from sqlalchemy import desc
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 import socket
 from urllib.parse import urlparse
 
@@ -135,7 +136,7 @@ class ActiveBucketRequest(BaseModel):
 
 # --- Experiment Models ---
 class ExperimentCreate(BaseModel):
-    experiment_id: str = Field(..., example="EXP-101")
+    experiment_id: str = Field(..., json_schema_extra={"example": "EXP-101"})
     bucket_label: Optional[str] = None
     start_date: Optional[date] = None
 
@@ -198,7 +199,15 @@ init_iot_controller(
     ph_update_getter=lambda: ph_update_requested
 )
 
-app = FastAPI(title="LEAFCLOUD API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    video_manager.start()
+    yield
+    # Shutdown
+    video_manager.stop()
+
+app = FastAPI(title="LEAFCLOUD API", lifespan=lifespan)
 
 # Register Routers
 app.include_router(iot_router)
@@ -206,15 +215,6 @@ app.include_router(iot_router)
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
 app.mount("/images", StaticFiles(directory="images"), name="images")
-
-# --- Lifecycle Events ---
-@app.on_event("startup")
-async def startup_event():
-    video_manager.start()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    video_manager.stop()
 
 # --- 1. ENDPOINTS FOR CONTROL ---
 
