@@ -29,6 +29,9 @@ active_bucket_id: Optional[str] = None
 active_experiment_id: Optional[str] = None
 restart_requested: bool = False
 ph_update_requested: bool = False
+ec_calibration_requested: bool = False
+ph_401_calibration_requested: bool = False
+ph_686_calibration_requested: bool = False
 
 # --- Video Management ---
 class VideoManager:
@@ -226,7 +229,81 @@ def get_current_status():
         "active_experiment_id": active_experiment_id,
         "restart_requested": restart_requested,
         "ph_update_requested": ph_update_requested,
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested,
         "server_time": datetime.now().isoformat()
+    }
+
+class CalibrationType(str, Enum):
+    EC = "ec"
+    PH_401 = "ph_401"
+    PH_686 = "ph_686"
+    STOP = "stop"
+
+class CalibrationRequest(BaseModel):
+    type: CalibrationType
+
+@app.post("/control/request-calibration")
+def request_calibration(request: CalibrationRequest):
+    """
+    Sets the global calibration request flags based on the type.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested, ph_update_requested
+
+    # Only one maintenance task can be active at a time
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+    ph_update_requested = False
+    if request.type == CalibrationType.EC:
+        ec_calibration_requested = True
+    elif request.type == CalibrationType.PH_401:
+        ph_401_calibration_requested = True
+    elif request.type == CalibrationType.PH_686:
+        ph_686_calibration_requested = True
+    
+    if request.type != CalibrationType.STOP:
+        print(f"🔔 Calibration requested: {request.type}. Stopping VideoManager.")
+        video_manager.stop()
+    else:
+        print("🔔 Calibration stopped by mobile app. Restarting VideoManager.")
+        video_manager.start()
+
+    return {
+        "status": "success",
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested
+    }
+
+@app.post("/control/acknowledge-calibration")
+def acknowledge_calibration(request: CalibrationRequest):
+    """
+    Clears the global calibration request flags.
+    Called by the IoT device once it starts/completes the calibration.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    
+    if request.type == CalibrationType.EC:
+        ec_calibration_requested = False
+    elif request.type == CalibrationType.PH_401:
+        ph_401_calibration_requested = False
+    elif request.type == CalibrationType.PH_686:
+        ph_686_calibration_requested = False
+    elif request.type == CalibrationType.STOP:
+        ec_calibration_requested = False
+        ph_401_calibration_requested = False
+        ph_686_calibration_requested = False
+
+    print(f"✅ Calibration acknowledged/completed by IoT device: {request.type}. Restarting VideoManager.")
+    video_manager.start()
+    
+    return {
+        "status": "success",
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested
     }
 
 @app.post("/control/request-ph-update")
@@ -235,7 +312,13 @@ def request_ph_update():
     Sets the global pH update request flag.
     Called by the Mobile App.
     """
-    global ph_update_requested
+    global ph_update_requested, ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    
+    # Disable all other calibration requests
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+    
     ph_update_requested = True
     print("🔔 pH update requested by mobile app. Stopping VideoManager.")
     video_manager.stop()

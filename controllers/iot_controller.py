@@ -57,7 +57,7 @@ class SensorData(BaseModel):
     temperature: float = Field(..., validation_alias=AliasChoices("temp", "temperature", "water_temp"))
     ec: float
     ph: float
-    # ph_is_estimated: Boolean flag indicating if the pH was simulated (True) 
+    # ph_is_estimated: Boolean flag indicating if the pH was simulated (True)
     # or measured from physical hardware (False). This is part of the Hybrid Data Strategy
     # implemented to bypass the ADC hardware bottleneck for the capstone defense.
     ph_is_estimated: bool = True
@@ -68,6 +68,49 @@ class SensorData(BaseModel):
 
 class PHUpdatePayload(BaseModel):
     ph: float
+
+@iot_router.post("/logs")
+async def create_ph_logs(payload: PHLogPayload):
+    """
+    Receives batched pH sensor data, logs it to a file, and broadcasts it.
+    """
+    os.makedirs("logs", exist_ok=True)
+    log_file = "logs/ph_sensor.log"
+
+    try:
+        # 1. Log to file
+        with open(log_file, "a") as f:
+            for reading in payload.readings:
+                log_entry = (
+                    f"{reading.timestamp.isoformat()} | "
+                    f"device:{payload.device_id} | "
+                    f"adc:{reading.raw_adc} | "
+                    f"voltage:{reading.voltage:.4f}V\n"
+                )
+                f.write(log_entry)
+
+        # 2. Broadcast to connected clients
+        # We broadcast the JSON-serializable version of the payload
+        await manager.broadcast(payload.model_dump(mode="json"))
+
+        return {"status": "success", "message": f"Logged {len(payload.readings)} readings from {payload.device_id}"}
+    except Exception as e:
+        print(f"❌ Error logging/broadcasting pH data: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@iot_router.post("/ping")
+async def ping_pi(data: dict):
+    """
+    Simple endpoint to test if the Raspberry Pi can send data to the server.
+    Accepts any JSON body and returns it back with a success message.
+    """
+    print(f"📡 [ping] Received test data from Pi: {data}")
+    return {
+        "status": "success",
+        "message": "Server received your ping!",
+        "received_data": data,
+        "server_time": datetime.now().isoformat()
+    }
 
 @iot_router.post("/experiments/{experiment_id}/update-ph")
 async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = Depends(get_db)):
@@ -100,7 +143,7 @@ async def update_ph(experiment_id: str, payload: PHUpdatePayload, db: Session = 
     reading.ph = payload.ph
     reading.ph_is_estimated = False
     reading.needs_ph_update = False
-    
+
     db.commit()
     db.refresh(reading)
 
@@ -125,7 +168,7 @@ def capture_frame(output_path: str) -> bool:
     if VIDEO_MANAGER is None:
         print("❌ VideoManager not initialized in IoT Controller.")
         return False
-        
+
     print(f"📸 Attempting to capture frame from shared VideoManager...")
     frame = VIDEO_MANAGER.get_latest_frame()
 
@@ -139,19 +182,19 @@ def capture_frame(output_path: str) -> bool:
 
 def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_label: Optional[str] = None) -> models.Experiment:
     """
-    Resolves the experiment to associate data with. 
+    Resolves the experiment to associate data with.
     Follows priority: payload experiment_id > global active_experiment_id > auto-generated ID.
     Ensures an experiment record is created exactly once in the database.
     """
     # 1. Determine the target experiment_id string
     target_id = None
-    
+
     if experiment_id:
         target_id = experiment_id
     else:
         # Check global state (set by Mobile App)
         target_id = get_active_experiment_id()
-    
+
     if not target_id:
         # Final fallback: Auto-generated ID based on the bucket label
         label = bucket_label or "NPK"
@@ -159,7 +202,7 @@ def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_
 
     # 2. Find existing record or create once
     experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == target_id).first()
-    
+
     if not experiment:
         print(f"📦 [resolve_experiment] Creating new experiment record: {target_id}")
         experiment = models.Experiment(
@@ -170,7 +213,7 @@ def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_
         db.add(experiment)
         db.commit()
         db.refresh(experiment)
-            
+
     return experiment
 
 @iot_router.post("/sensor_data/", status_code=201)
