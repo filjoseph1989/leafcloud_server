@@ -311,6 +311,92 @@ def login(request: LoginRequest):
         return {"status": "success", "token": "demo-access-token-xyz-789"}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
+# --- Image Management Endpoints ---
+
+@app.get("/admin/images/", response_model=list[ImageInfo])
+def list_images(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
+    """
+    Lists all images under 'images/<YYYY-MM-DD>/<TYPE>/' subdirectories,
+    providing metadata about their association with database records.
+    """
+    image_dir = "images"
+    if not os.path.exists(image_dir):
+        return []
+
+    # 1. Walk all subdirectories and collect (abs_path, rel_path) for image files
+    entries = []
+    for dirpath, _dirnames, filenames in os.walk(image_dir):
+        for fname in filenames:
+            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+                abs_path = os.path.join(dirpath, fname)
+                rel_path = os.path.relpath(abs_path, start=".").replace("\\", "/")
+                entries.append((abs_path, rel_path))
+
+    # Sort by modification time (newest first)
+    entries.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
+
+    # 2. Slice for pagination
+    paged = entries[skip : skip + limit]
+
+    # 3. Match each file against the DB using the stored relative path
+    results = []
+    for abs_path, rel_path in paged:
+        filename = os.path.basename(rel_path)
+        reading = db.query(models.DailyReading).filter(
+            models.DailyReading.image_path == rel_path
+        ).first()
+
+        info = ImageInfo(
+            filename=rel_path,  # include subpath so the caller knows the full location
+            image_url=f"/{rel_path}",
+            is_orphaned=reading is None,
+        )
+
+        if reading:
+            info.reading_id = reading.id
+            info.timestamp = reading.timestamp
+            if reading.experiment:
+                info.bucket_label = reading.experiment.bucket_label
+
+        results.append(info)
+
+    return results
+
+@app.delete("/admin/images/{image_path:path}")
+def delete_image(image_path: str, authorization: str = Header(None), db: Session = Depends(get_db)):
+    """
+    Deletes an image from the server. 
+    If the image is linked to a database record, the record is also deleted.
+    """
+    # 1. Security Check
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 2. Normalize filename
+    # Strip 'images/' prefix if present
+    filename = os.path.basename(image_path)
+    full_path = os.path.join("images", filename)
+
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # 3. Delete from DB if linked
+    reading = db.query(models.DailyReading).filter(
+        models.DailyReading.image_path.like(f"%{filename}")
+    ).first()
+    
+    if reading:
+        db.delete(reading)
+        db.commit()
+
+    # 4. Delete from Disk
+    try:
+        os.remove(full_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+    return {"status": "success", "message": f"Deleted {filename}"}
+
 @app.get("/video_feed")
 async def video_feed():
     def generate():
