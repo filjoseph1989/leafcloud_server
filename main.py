@@ -267,42 +267,49 @@ def acknowledge_calibration(request: CalibrationRequest):
 
 @app.post("/control/request-ph-update")
 def request_ph_update():
+    logger.info("MOBILE REQUEST: pH Update Started (Camera Stopped)")
     global ph_update_requested
     ph_update_requested = True
     video_manager.stop()
-    return {"status": "success"}
+    return {"status": "success", "ph_update_requested": ph_update_requested}
 
 @app.post("/control/acknowledge-ph-update")
 def acknowledge_ph_update():
+    logger.info("IOT ACKNOWLEDGE: pH Update Complete (Camera Restarted)")
     global ph_update_requested
     ph_update_requested = False
     video_manager.start()
-    return {"status": "success"}
+    return {"status": "success", "ph_update_requested": ph_update_requested}
 
 @app.post("/control/restart-iot")
 def restart_iot():
+    logger.info("MOBILE REQUEST: IoT Restart")
     global restart_requested
     restart_requested = True
     video_manager.stop()
     video_manager.start()
-    return {"status": "success"}
+    return {"status": "success", "restart_requested": restart_requested}
 
 @app.post("/control/acknowledge-restart")
 def acknowledge_restart():
+    logger.info("IOT ACKNOWLEDGE: Restart Complete")
     global restart_requested
     restart_requested = False
-    return {"status": "success"}
+    return {"status": "success", "restart_requested": restart_requested}
 
 @app.post("/control/active-bucket")
 def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db)):
+    logger.info(f"MOBILE REQUEST: Set Active Bucket to {request.bucket_id}")
     global active_bucket_id, active_experiment_id
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
         active_experiment_id = None
-        return {"status": "success", "message": "Stopped"}
+        logger.info("STATUS: System Stopped (No Active Bucket)")
+        return {"status": "success", "active_bucket_id": active_bucket_id}
     active_bucket_id = request.bucket_id.value
     experiment = resolve_experiment(db, bucket_label=active_bucket_id)
     active_experiment_id = experiment.experiment_id
+    logger.info(f"STATUS: Experiment Resolved -> {active_experiment_id}")
     return {"status": "success", "active_bucket_id": active_bucket_id}
 
 @app.post("/auth/login")

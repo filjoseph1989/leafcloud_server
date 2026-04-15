@@ -187,11 +187,28 @@ def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_
 
     return experiment
 
+def get_image_save_path(bucket_label: str, timestamp: datetime) -> str:
+    """
+    Generates a path following the pattern: images/YYYY-MM-DD/SENSOR_TYPE/reading_TYPE_YYYYMMDD_HHMMSS.jpg
+    Also ensures the directory exists.
+    """
+    date_str = timestamp.strftime("%Y-%m-%d")
+    timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
+    sensor_type = bucket_label or "Unknown"
+    
+    # Create directory: images/2026-04-15/NPK/
+    dir_path = os.path.join("images", date_str, sensor_type)
+    os.makedirs(dir_path, exist_ok=True)
+    
+    filename = f"reading_{sensor_type}_{timestamp_str}.jpg"
+    return os.path.join(dir_path, filename)
+
 @iot_router.post("/sensor_data/", status_code=201)
 async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
     Receives JSON sensor data from the Raspberry Pi and stores it in the database.
     """
+    logger.info(f"PI REQUEST: Sensor Data -> Bucket: {data.bucket_id}, pH: {data.ph}, EC: {data.ec}, Temp: {data.temperature}")
     print(f"📥 [create_sensor_data] Received payload: {data}")
 
     # Determine bucket label: priority to payload, then global state
@@ -200,10 +217,8 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
 
     # --- IMAGE CAPTURE ---
-    timestamp_str = (data.timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    image_filename = f"reading_{final_bucket_label}_{timestamp_str}.jpg"
-    os.makedirs("images", exist_ok=True)
-    image_path = os.path.join("images", image_filename)
+    timestamp = data.timestamp or datetime.now()
+    image_path = get_image_save_path(final_bucket_label, timestamp)
 
     if not capture_frame(image_path):
         print(f"⚠️ [create_sensor_data] Capture failed, continuing without image.")
