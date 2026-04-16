@@ -36,3 +36,12 @@ leafcloud-queries.dbcnb
 *.db
 .coverage
 *.log
+
+.coverage.fils-MacBook-Pro_local.pid39722.XZXl0p2x
+.docs/
+conductor/*
+database-query.result
+instruction.md
+test_ph_raw.pycalibration_config.json
+images_b/
+images_c/
