@@ -350,7 +350,7 @@ def list_images(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
     entries = []
     for dirpath, _dirnames, filenames in os.walk(image_dir):
         for fname in filenames:
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+            if fname.lower().endswith(('.png', '.jpg', '.jpeg')) and not fname.startswith('.'):
                 abs_path = os.path.join(dirpath, fname)
                 rel_path = os.path.relpath(abs_path, start=".").replace("\\", "/")
                 entries.append((abs_path, rel_path))

@@ -1,6 +1,7 @@
 import os
 import shutil
 import cv2
+import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
+logger = logging.getLogger(__name__)
 
 # Internal references that will be injected or accessed globally
 AI_MODEL = None
