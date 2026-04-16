@@ -2,11 +2,12 @@ import os
 import platform
 
 # --- WSL/FFMPEG Optimization ---
-if "microsoft-standard-WSL2" in platform.uname().release:
+if "microsoft-standard-WSL2" in platform.uname().release or platform.system() == "Darwin":
     # protocol_whitelist: allows UDP stream
     # stimeout: timeout in microseconds (5s)
     # probesize/analyzeduration: help sync the stream faster
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "protocol_whitelist;file,rtp,udp|stimeout;5000000|fflags;nobuffer|probesize;128000|analyzeduration;500000"
+
 
 def get_host_ip():
     try:
@@ -33,6 +34,7 @@ from contextlib import asynccontextmanager
 import socket
 import threading
 import time
+import logging
 from urllib.parse import urlparse
 from typing import Optional
 from enum import Enum
@@ -43,6 +45,18 @@ import models
 from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
 
 load_dotenv()
+
+# --- Logging Configuration ---
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("logs/app.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # --- Global State ---
 active_bucket_id: Optional[str] = None
@@ -62,8 +76,9 @@ class VideoManager:
         self.running = False
         self.thread = None
         self.is_wsl = "microsoft-standard-WSL2" in platform.uname().release
+        self.is_mac = platform.system() == "Darwin"
         
-        if self.is_wsl:
+        if self.is_wsl or self.is_mac:
             if "udp://" in self.source_url and "0.0.0.0" in self.source_url:
                 if "?listen" not in self.source_url:
                     self.source_url += "?listen=1"
@@ -73,8 +88,9 @@ class VideoManager:
             try: port = urlparse(self.source_url).port or "5000"
             except: pass
             
-            print(f"📡 [WSL Server] Video Listener RE-ACTIVATED on: {self.source_url}")
-            print(f"📡 [WSL Server] Send your camera stream to: {host_ip}:{port}")
+            server_type = "Mac" if self.is_mac else "WSL"
+            print(f"📡 [{server_type} Server] Video Listener RE-ACTIVATED on: {self.source_url}")
+            print(f"📡 [{server_type} Server] Send your camera stream to: {host_ip}:{port}")
             print(f"💡 PI COMMAND: ffmpeg -i /dev/video0 -f mpegts -codec:v mpeg1video -b:v 800k -r 30 udp://{host_ip}:{port}")
 
     def start(self):
