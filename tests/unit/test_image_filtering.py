@@ -80,3 +80,50 @@ def test_is_mostly_green(mocker):
     
     assert is_mostly_green("green.jpg", threshold=50.0) is True
     assert is_mostly_green("not_green.jpg", threshold=50.0) is False
+
+def test_process_image_batch(tmp_path, mocker):
+    import shutil
+    from image_filtering import process_image_batch
+    
+    # Create test directory and trash directory
+    test_dir = tmp_path / "images"
+    test_dir.mkdir()
+    trash_dir = tmp_path / "temp_trash"
+    trash_dir.mkdir()
+    
+    # 1. Metadata file (should be deleted)
+    metadata_file = test_dir / "._meta.jpg"
+    metadata_file.write_text("meta")
+    
+    # 2. Corrupted file (should be deleted)
+    corrupted_file = test_dir / "corrupted.jpg"
+    corrupted_file.write_text("small") # 5 bytes
+    
+    # 3. Non-green file (should be moved to trash)
+    not_green_file = test_dir / "not_green.jpg"
+    not_green_file.write_text("a" * 2000)
+    
+    # 4. Green file (should stay)
+    green_file = test_dir / "green.jpg"
+    green_file.write_text("a" * 2000)
+    
+    # Mock greenness: 10% for not_green, 90% for green
+    mocker.patch("image_filtering.calculate_greenness", side_effect=[10.0, 90.0])
+    
+    stats = process_image_batch(
+        str(test_dir), 
+        str(trash_dir), 
+        size_threshold=1000, 
+        green_threshold=50.0
+    )
+    
+    assert stats["deleted_metadata"] == 1
+    assert stats["deleted_corrupted"] == 1
+    assert stats["moved_to_trash"] == 1
+    assert stats["kept"] == 1
+    
+    assert not os.path.exists(metadata_file)
+    assert not os.path.exists(corrupted_file)
+    assert not os.path.exists(not_green_file)
+    assert os.path.exists(green_file)
+    assert os.path.exists(trash_dir / "not_green.jpg")

@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import shutil
 
 def is_macos_metadata(filename: str) -> bool:
     """Checks if a file is a macOS metadata file (starts with ._)."""
@@ -84,3 +85,66 @@ def calculate_greenness(image_path: str) -> float:
 def is_mostly_green(image_path: str, threshold: float) -> bool:
     """Checks if an image has more green than the threshold percentage."""
     return calculate_greenness(image_path) >= threshold
+
+def process_image_batch(directory: str, trash_dir: str, size_threshold: int, green_threshold: float) -> dict:
+    """
+    Processes a batch of images:
+    - Deletes macOS metadata (._*)
+    - Deletes corrupted files (size < threshold)
+    - Moves non-green images to trash_dir
+    - Keeps mostly green images
+    Returns a dictionary of statistics.
+    """
+    stats = {
+        "deleted_metadata": 0,
+        "deleted_corrupted": 0,
+        "moved_to_trash": 0,
+        "kept": 0,
+        "total_processed": 0
+    }
+    
+    if not os.path.exists(directory):
+        return stats
+        
+    if not os.path.exists(trash_dir):
+        os.makedirs(trash_dir, exist_ok=True)
+        
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        
+        # Only process files
+        if not os.path.isfile(file_path):
+            continue
+            
+        stats["total_processed"] += 1
+            
+        # 1. macOS Metadata
+        if is_macos_metadata(filename):
+            try:
+                os.remove(file_path)
+                stats["deleted_metadata"] += 1
+            except OSError:
+                pass
+            continue
+            
+        # 2. Corrupted File
+        if is_corrupted_file(file_path, size_threshold):
+            try:
+                os.remove(file_path)
+                stats["deleted_corrupted"] += 1
+            except OSError:
+                pass
+            continue
+            
+        # 3. Greenness Test
+        if is_mostly_green(file_path, green_threshold):
+            stats["kept"] += 1
+        else:
+            try:
+                # Move to trash instead of permanent deletion
+                shutil.move(file_path, os.path.join(trash_dir, filename))
+                stats["moved_to_trash"] += 1
+            except (OSError, shutil.Error):
+                pass
+                
+    return stats
