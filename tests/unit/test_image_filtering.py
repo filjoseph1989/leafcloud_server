@@ -135,3 +135,47 @@ def test_process_image_batch(tmp_path, mocker):
     assert os.path.exists(green_file)
     assert os.path.exists(nested_file)
     assert os.path.exists(trash_dir / "not_green.jpg")
+
+def test_process_image_batch_with_logging(tmp_path, mocker):
+    import shutil
+    from image_filtering import process_image_batch
+    from models import AutomatedActionLog
+    
+    test_dir = tmp_path / "images"
+    test_dir.mkdir()
+    trash_dir = tmp_path / "temp_trash"
+    trash_dir.mkdir()
+    
+    # Create a non-green file (should be moved and logged)
+    not_green_file = test_dir / "bad.jpg"
+    not_green_file.write_text("a" * 2000)
+    
+    # Mock greenness
+    mocker.patch("image_filtering.calculate_greenness", return_value=10.0)
+    
+    # Mock DB Session
+    mock_db = mocker.Mock()
+    
+    stats = process_image_batch(
+        str(test_dir), 
+        str(trash_dir), 
+        size_threshold=1000, 
+        green_threshold=50.0,
+        db=mock_db
+    )
+    
+    assert stats["moved_to_trash"] == 1
+    
+    # Verify that mock_db.add was called
+    mock_db.add.assert_called_once()
+    log_entry = mock_db.add.call_args[0][0]
+    assert isinstance(log_entry, AutomatedActionLog)
+    assert log_entry.filename == "bad.jpg"
+    assert log_entry.action_type == "move_to_trash"
+    assert log_entry.reason == "low_greenness"
+    assert log_entry.metric_value == 10.0
+    assert log_entry.original_path == str(not_green_file)
+    assert log_entry.current_path == str(trash_dir / "bad.jpg")
+    
+    # Verify commit was called
+    mock_db.commit.assert_called_once()
