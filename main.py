@@ -35,6 +35,7 @@ import socket
 import threading
 import time
 import logging
+import anyio
 from urllib.parse import urlparse
 from typing import Optional
 from enum import Enum
@@ -42,6 +43,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from database import get_db, engine, Base
 import models
+import image_filtering
 from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
 
 load_dotenv()
@@ -449,6 +451,38 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "sensors": {"ph": reading.ph, "ec": reading.ec, "temp": reading.water_temp},
         "npk_levels": {"Nitrogen": latest.predicted_n, "Phosphorus": latest.predicted_p, "Potassium": latest.predicted_k}
     }
+
+class PreFilterRequest(BaseModel):
+    size_threshold: int = Field(default=1000, description="Minimum file size in bytes")
+    green_threshold: float = Field(default=50.0, description="Minimum greenness percentage")
+
+@app.post("/api/v1/images/pre-filter")
+async def pre_filter_images(request: PreFilterRequest):
+    """
+    Triggers the automated pre-filtering process for images.
+    - Deletes metadata
+    - Deletes corrupted files
+    - Moves non-green images to temp_trash
+    """
+    logger.info(f"API REQUEST: Image Pre-Filtering (size={request.size_threshold}, green={request.green_threshold})")
+    
+    image_dir = "images"
+    trash_dir = os.path.join(image_dir, "temp_trash")
+    
+    # Run heavy processing in a separate thread to avoid blocking FastAPI
+    try:
+        stats = await anyio.to_thread.run_sync(
+            image_filtering.process_image_batch,
+            image_dir,
+            trash_dir,
+            request.size_threshold,
+            request.green_threshold
+        )
+        logger.info(f"PRE-FILTER COMPLETE: {stats}")
+        return {"status": "success", "stats": stats}
+    except Exception as e:
+        logger.error(f"PRE-FILTER ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
