@@ -16,6 +16,7 @@ __pycache__/
 
 # OS-specific files
 .DS_Store
+._*
 
 # Build and distribution artifacts
 build/
