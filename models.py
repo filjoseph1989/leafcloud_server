@@ -72,3 +72,18 @@ class NPKPrediction(Base):
 
     # Relationship
     daily_reading = relationship("DailyReading", back_populates="prediction")
+
+class AutomatedActionLog(Base):
+    """
+    Audit Log: Tracks automated filesystem actions (e.g. moving images to trash).
+    """
+    __tablename__ = "automated_action_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255))
+    original_path = Column(String(255))
+    current_path = Column(String(255))
+    action_type = Column(String(50)) # e.g., "move_to_trash", "permanent_delete"
+    reason = Column(String(100))     # e.g., "low_greenness", "corrupted_size"
+    metric_value = Column(Float, nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
