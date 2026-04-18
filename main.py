@@ -9,6 +9,8 @@ import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
 import socket
+import anyio
+import image_filtering
 from urllib.parse import urlparse
 
 from database import get_db, engine, Base
@@ -799,6 +801,38 @@ def delete_image(
         raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
 
     return {"status": "success", "message": f"Image {clean_filename} and associated data deleted"}
+
+class PreFilterRequest(BaseModel):
+    size_threshold: int = Field(default=1000, description="Minimum file size in bytes")
+    green_threshold: float = Field(default=50.0, description="Minimum greenness percentage")
+
+@app.post("/api/v1/images/pre-filter")
+async def pre_filter_images(request: PreFilterRequest):
+    """
+    Triggers the automated pre-filtering process for images.
+    - Deletes metadata
+    - Deletes corrupted files
+    - Moves non-green images to temp_trash
+    """
+    print(f"📡 API REQUEST: Image Pre-Filtering (size={request.size_threshold}, green={request.green_threshold})")
+    
+    image_dir = "images"
+    trash_dir = os.path.join(image_dir, "temp_trash")
+    
+    # Run heavy processing in a separate thread to avoid blocking FastAPI
+    try:
+        stats = await anyio.to_thread.run_sync(
+            image_filtering.process_image_batch,
+            image_dir,
+            trash_dir,
+            request.size_threshold,
+            request.green_threshold
+        )
+        print(f"✅ PRE-FILTER COMPLETE: {stats}")
+        return {"status": "success", "stats": stats}
+    except Exception as e:
+        print(f"❌ PRE-FILTER ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
