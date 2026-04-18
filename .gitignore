@@ -37,11 +37,9 @@ leafcloud-queries.dbcnb
 .coverage
 *.log
 
-.coverage.fils-MacBook-Pro_local.pid39722.XZXl0p2x
 .docs/
-conductor/*
 database-query.result
-instruction.md
-test_ph_raw.pycalibration_config.json
 images_b/
 images_c/
+leafcloud2_backup_20260418_005648.sql
+leafcloud_backup_20260414_204522.sql
