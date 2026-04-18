@@ -808,7 +808,7 @@ class PreFilterRequest(BaseModel):
     green_threshold: float = Field(default=50.0, description="Minimum greenness percentage")
 
 @app.post("/api/v1/images/pre-filter")
-async def pre_filter_images(request: PreFilterRequest):
+async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get_db)):
     """
     Triggers the automated pre-filtering process for images.
     - Deletes metadata
@@ -827,7 +827,8 @@ async def pre_filter_images(request: PreFilterRequest):
             image_dir,
             trash_dir,
             request.size_threshold,
-            request.green_threshold
+            request.green_threshold,
+            db
         )
         print(f"✅ PRE-FILTER COMPLETE: {stats}")
         return {"status": "success", "stats": stats}
