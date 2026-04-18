@@ -107,8 +107,14 @@ def test_process_image_batch(tmp_path, mocker):
     green_file = test_dir / "green.jpg"
     green_file.write_text("a" * 2000)
     
-    # Mock greenness: 10% for not_green, 90% for green
-    mocker.patch("image_filtering.calculate_greenness", side_effect=[10.0, 90.0])
+    # 5. Nested image in subdirectory (should be processed)
+    sub_dir = test_dir / "2026-04-16" / "Micro"
+    sub_dir.mkdir(parents=True)
+    nested_file = sub_dir / "nested.jpg"
+    nested_file.write_text("a" * 2000)
+    
+    # Mock greenness: 10% for not_green, 90% for green, 90% for nested
+    mocker.patch("image_filtering.calculate_greenness", side_effect=[10.0, 90.0, 90.0])
     
     stats = process_image_batch(
         str(test_dir), 
@@ -120,10 +126,12 @@ def test_process_image_batch(tmp_path, mocker):
     assert stats["deleted_metadata"] == 1
     assert stats["deleted_corrupted"] == 1
     assert stats["moved_to_trash"] == 1
-    assert stats["kept"] == 1
+    assert stats["kept"] == 2 # green.jpg + nested.jpg
+    assert stats["total_processed"] == 5
     
     assert not os.path.exists(metadata_file)
     assert not os.path.exists(corrupted_file)
     assert not os.path.exists(not_green_file)
     assert os.path.exists(green_file)
+    assert os.path.exists(nested_file)
     assert os.path.exists(trash_dir / "not_green.jpg")

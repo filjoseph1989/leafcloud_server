@@ -109,42 +109,43 @@ def process_image_batch(directory: str, trash_dir: str, size_threshold: int, gre
     if not os.path.exists(trash_dir):
         os.makedirs(trash_dir, exist_ok=True)
         
-    for filename in os.listdir(directory):
-        file_path = os.path.join(directory, filename)
-        
-        # Only process files
-        if not os.path.isfile(file_path):
+    for dirpath, _dirnames, filenames in os.walk(directory):
+        # Skip the trash directory itself to avoid recursive processing
+        if os.path.abspath(dirpath) == os.path.abspath(trash_dir):
             continue
             
-        stats["total_processed"] += 1
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
             
-        # 1. macOS Metadata
-        if is_macos_metadata(filename):
-            try:
-                os.remove(file_path)
-                stats["deleted_metadata"] += 1
-            except OSError:
-                pass
-            continue
-            
-        # 2. Corrupted File
-        if is_corrupted_file(file_path, size_threshold):
-            try:
-                os.remove(file_path)
-                stats["deleted_corrupted"] += 1
-            except OSError:
-                pass
-            continue
-            
-        # 3. Greenness Test
-        if is_mostly_green(file_path, green_threshold):
-            stats["kept"] += 1
-        else:
-            try:
-                # Move to trash instead of permanent deletion
-                shutil.move(file_path, os.path.join(trash_dir, filename))
-                stats["moved_to_trash"] += 1
-            except (OSError, shutil.Error):
-                pass
+            stats["total_processed"] += 1
+                
+            # 1. macOS Metadata
+            if is_macos_metadata(filename):
+                try:
+                    os.remove(file_path)
+                    stats["deleted_metadata"] += 1
+                except OSError:
+                    pass
+                continue
+                
+            # 2. Corrupted File
+            if is_corrupted_file(file_path, size_threshold):
+                try:
+                    os.remove(file_path)
+                    stats["deleted_corrupted"] += 1
+                except OSError:
+                    pass
+                continue
+                
+            # 3. Greenness Test
+            if is_mostly_green(file_path, green_threshold):
+                stats["kept"] += 1
+            else:
+                try:
+                    # Move to trash instead of permanent deletion
+                    shutil.move(file_path, os.path.join(trash_dir, filename))
+                    stats["moved_to_trash"] += 1
+                except (OSError, shutil.Error):
+                    pass
                 
     return stats
