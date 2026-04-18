@@ -375,22 +375,28 @@ def main():
             ec_value = avg_ec_voltage * EC_K_VALUE
 
             # 5. Hybrid Data Strategy & Triggered Update logic
-            if ph_update_requested and experiment_id:
-                # Continuous Real-time Mode: Use hardware probe
-                current_ph = get_ph_value(avg_ph_voltage)
-                ph_is_estimated = False
-                local_status = "Real-time"
+            if ph_update_requested:
+                if experiment_id:
+                    # Continuous Real-time Mode: Use hardware probe
+                    current_ph = get_ph_value(avg_ph_voltage)
+                    ph_is_estimated = False
+                    local_status = "Real-time"
 
-                # Send FIFO update to server while session is active
-                UPDATE_URL = f"http://{MACBOOK_IP}:8000/iot/experiments/{experiment_id}/update-ph"
-                try:
-                    up_resp = requests.post(UPDATE_URL, json={"ph": round(current_ph, 2)}, timeout=5.0)
-                    if up_resp.status_code == 200:
-                        print(f"✅ Continuous Update: {current_ph:.2f}")
-                    else:
-                        print(f"❌ Continuous Update failed ({up_resp.status_code})")
-                except Exception as e:
-                    print(f"❌ Continuous Update Error: {e}")
+                    # Send FIFO update to server while session is active
+                    UPDATE_URL = f"http://{MACBOOK_IP}:8000/iot/experiments/{experiment_id}/update-ph"
+                    try:
+                        up_resp = requests.post(UPDATE_URL, json={"ph": round(current_ph, 2)}, timeout=5.0)
+                        if up_resp.status_code == 200:
+                            print(f"✅ Continuous Update: {current_ph:.2f}")
+                        else:
+                            print(f"❌ Continuous Update failed ({up_resp.status_code})")
+                    except Exception as e:
+                        print(f"❌ Continuous Update Error: {e}")
+                else:
+                    current_ph = get_ph_value(avg_ph_voltage)
+                    ph_is_estimated = False
+                    local_status = "Real-time"
+                    print("⚠️ pH update active but NO active experiment set on server.")
             else:
                 # Standard Hybrid Mode: Use simulated/centralized value
                 current_ph = HYBRID_PH_VALUE

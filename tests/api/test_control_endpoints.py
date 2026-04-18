@@ -69,3 +69,39 @@ def test_post_active_bucket_invalid(client):
     payload = {"bucket_id": "InvalidBucket"}
     response = client.post("/control/active-bucket", json=payload)
     assert response.status_code == 422
+
+def test_calibration_flow(client):
+    """
+    Verifies the calibration request and acknowledgement flow.
+    """
+    # 1. Request EC calibration
+    response = client.post("/control/request-calibration", json={"calibration_type": "ec"})
+    assert response.status_code == 200
+    assert response.json()["ec_calibration_requested"] is True
+    
+    # 2. Verify status
+    status = client.get("/control/current-status").json()
+    assert status["ec_calibration_requested"] is True
+    assert status["ph_401_calibration_requested"] is False
+    
+    # 3. Request PH 4.01 calibration (should clear EC)
+    response = client.post("/control/request-calibration", json={"calibration_type": "ph_4.01"})
+    assert response.status_code == 200
+    assert response.json()["ph_401_calibration_requested"] is True
+    assert response.json()["ec_calibration_requested"] is False
+    
+    # 4. Acknowledge
+    response = client.post("/control/acknowledge-calibration")
+    assert response.status_code == 200
+    
+    # 5. Verify status cleared
+    status = client.get("/control/current-status").json()
+    assert status["ph_401_calibration_requested"] is False
+    assert status["ec_calibration_requested"] is False
+
+def test_calibration_invalid_type(client):
+    """
+    Verifies that invalid calibration types are rejected.
+    """
+    response = client.post("/control/request-calibration", json={"calibration_type": "invalid"})
+    assert response.status_code == 422

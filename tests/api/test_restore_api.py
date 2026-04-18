@@ -75,7 +75,3 @@ def test_restore_images_missing_file(client, db_session, tmp_path):
     # 3. Verify failure (400 as per spec)
     assert response.status_code == 400
     assert "not found in trash" in response.json()["detail"]
-    
-    # Cleanup log if it stayed (though spec doesn't strictly say delete on failure)
-    db_session.delete(log_entry)
-    db_session.commit()

@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import shutil
+import uuid
 from models import AutomatedActionLog
 
 def is_macos_metadata(filename: str) -> bool:
@@ -166,7 +167,9 @@ def process_image_batch(directory: str, trash_dir: str, size_threshold: int, gre
             else:
                 try:
                     # Move to trash instead of permanent deletion
-                    dest_path = os.path.join(trash_dir, filename)
+                    # Use unique filename to avoid collisions during recursive walks
+                    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+                    dest_path = os.path.join(trash_dir, unique_filename)
                     shutil.move(file_path, dest_path)
                     stats["moved_to_trash"] += 1
                     if db:

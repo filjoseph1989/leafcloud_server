@@ -134,7 +134,10 @@ def test_process_image_batch(tmp_path, mocker):
     assert not os.path.exists(not_green_file)
     assert os.path.exists(green_file)
     assert os.path.exists(nested_file)
-    assert os.path.exists(trash_dir / "not_green.jpg")
+    
+    # Check if a file with the name exists in trash (it should have a UUID prefix)
+    trash_files = os.listdir(trash_dir)
+    assert any(f.endswith("_not_green.jpg") for f in trash_files)
 
 def test_process_image_batch_with_logging(tmp_path, mocker):
     import shutil
@@ -175,7 +178,10 @@ def test_process_image_batch_with_logging(tmp_path, mocker):
     assert log_entry.reason == "low_greenness"
     assert log_entry.metric_value == 10.0
     assert log_entry.original_path == str(not_green_file)
-    assert log_entry.current_path == str(trash_dir / "bad.jpg")
+    
+    # Verify current_path has UUID and ends with filename
+    assert log_entry.current_path.startswith(str(trash_dir))
+    assert "_bad.jpg" in log_entry.current_path
     
     # Verify commit was called
     mock_db.commit.assert_called_once()
