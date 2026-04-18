@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import socket
 import anyio
 import image_filtering
+import shutil
 from urllib.parse import urlparse
 
 from database import get_db, engine, Base
@@ -833,6 +834,58 @@ async def pre_filter_images(request: PreFilterRequest):
     except Exception as e:
         print(f"❌ PRE-FILTER ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class RestoreRequest(BaseModel):
+    log_ids: list[int] = Field(..., description="List of log IDs to restore from trash")
+
+@app.post("/api/v1/images/restore")
+async def restore_images(
+    request: RestoreRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Restores images from temp_trash to their original location based on log entries.
+    """
+    # 1. Auth Check
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 2. Fetch all requested logs
+    logs = db.query(models.AutomatedActionLog).filter(models.AutomatedActionLog.id.in_(request.log_ids)).all()
+    
+    if len(logs) != len(request.log_ids):
+        found_ids = [l.id for l in logs]
+        missing_ids = list(set(request.log_ids) - set(found_ids))
+        raise HTTPException(status_code=400, detail=f"Some log IDs not found: {missing_ids}")
+
+    # 3. Pre-flight check: Ensure all files exist in current_path
+    for log in logs:
+        if not os.path.exists(log.current_path):
+            raise HTTPException(status_code=400, detail=f"File {log.filename} (ID {log.id}) not found in trash: {log.current_path}")
+
+    # 4. Perform restoration
+    restored_count = 0
+    try:
+        for log in logs:
+            # Ensure destination directory exists
+            os.makedirs(os.path.dirname(log.original_path), exist_ok=True)
+            
+            # Move file back
+            shutil.move(log.current_path, log.original_path)
+            
+            # Delete log entry
+            db.delete(log)
+            restored_count += 1
+            
+        db.commit()
+        print(f"♻️ Restored {restored_count} images from trash.")
+        return {"status": "success", "message": f"Restored {restored_count} images", "restored_count": restored_count}
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ RESTORE ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
