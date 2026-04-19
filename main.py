@@ -17,6 +17,12 @@ from urllib.parse import urlparse
 from database import get_db, engine, Base
 import models
 from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
+from controllers.images_controller import images_router
+from schemas.images import (
+    BucketLabel, ActiveBucketRequest, ExperimentCreate, ExperimentResponse,
+    ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, ImageInfo,
+    ActiveExperimentRequest
+)
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing import Optional
@@ -125,62 +131,6 @@ class VideoManager:
 
 video_manager = VideoManager()
 
-# --- Models & Enums ---
-class BucketLabel(str, Enum):
-    NPK = "NPK"
-    Micro = "Micro"
-    Mix = "Mix"
-    Water = "Water"
-    STOP = "STOP"
-
-class ActiveBucketRequest(BaseModel):
-    bucket_id: BucketLabel
-
-# --- Experiment Models ---
-class ExperimentCreate(BaseModel):
-    experiment_id: str = Field(..., example="EXP-101")
-    bucket_label: Optional[str] = None
-    start_date: Optional[date] = None
-
-class ExperimentResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    experiment_id: Optional[str] = None
-    bucket_label: Optional[str] = None
-    start_date: Optional[date] = None
-
-class ReadingHistoryItem(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    timestamp: datetime
-    ph: float
-    ec: float
-    water_temp: float
-    image_url: Optional[str] = None
-    n: Optional[float] = None
-    p: Optional[float] = None
-    k: Optional[float] = None
-
-class ExperimentHistoryResponse(BaseModel):
-    id: int
-    experiment_id: Optional[str] = None
-    history: dict[str, list[ReadingHistoryItem]] # Grouped by bucket_label
-
-# --- Auth Models ---
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-class ImageInfo(BaseModel):
-    filename: str
-    reading_id: Optional[int] = None
-    timestamp: Optional[datetime] = None
-    image_url: str
-    is_orphaned: bool = False
-    bucket_label: Optional[str] = None
-
-
 # Load AI Brain (Mock loader for now if file doesn't exist)
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -211,6 +161,7 @@ app = FastAPI(title="LEAFCLOUD API")
 
 # Register Routers
 app.include_router(iot_router)
+app.include_router(images_router)
 
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
@@ -401,9 +352,6 @@ def acknowledge_restart():
     restart_requested = False
     print("✅ Restart acknowledged by IoT device. Flag reset.")
     return {"status": "success", "restart_requested": False}
-
-class ActiveExperimentRequest(BaseModel):
-    experiment_id: Optional[str]
 
 @app.post("/control/active-experiment")
 def set_active_experiment(request: ActiveExperimentRequest):
@@ -892,6 +840,7 @@ def list_images(
 
     return results
 
+<<<<<<< Updated upstream
 @app.delete("/admin/images/{filename:path}")
 def delete_image(
     filename: str,
@@ -1034,6 +983,8 @@ async def restore_images(
         print(f"❌ RESTORE ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
 
+=======
+>>>>>>> Stashed changes
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
