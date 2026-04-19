@@ -67,3 +67,12 @@ class PreFilterRequest(BaseModel):
 
 class RestoreRequest(BaseModel):
     log_ids: List[int] = Field(..., description="List of log IDs to restore from trash")
+
+class TrashItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    filename: str
+    reason: str
+    metric_value: Optional[float] = None
+    timestamp: datetime

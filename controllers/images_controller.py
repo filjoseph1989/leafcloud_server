@@ -8,10 +8,31 @@ from typing import Optional
 from database import get_db
 import models
 import image_filtering
-from schemas.images import PreFilterRequest, RestoreRequest
+from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse
 
 # Router for image administrative actions
 images_router = APIRouter(prefix="/api/v1/images", tags=["Images Admin"])
+
+@images_router.get("/trash", response_model=list[TrashItemResponse])
+def get_trashed_images(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of images that were moved to trash by automated processes.
+    Sorted by timestamp (newest first).
+    """
+    # Enforce maximum limit
+    if limit > 100:
+        limit = 100
+        
+    query = db.query(models.AutomatedActionLog)\
+        .filter(models.AutomatedActionLog.action_type == "move_to_trash")\
+        .order_by(models.AutomatedActionLog.timestamp.desc())
+        
+    items = query.offset(skip).limit(limit).all()
+    return items
 
 @images_router.post("/pre-filter")
 async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get_db)):
