@@ -17,13 +17,18 @@ images_router = APIRouter(prefix="/api/v1/images", tags=["Images Admin"])
 def get_trashed_images(
     skip: int = 0,
     limit: int = 50,
+    authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
     """
     Returns a list of images that were moved to trash by automated processes.
     Sorted by timestamp (newest first).
     """
-    # Enforce maximum limit
+    # 1. Auth Check
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 2. Enforce maximum limit
     if limit > 100:
         limit = 100
         
