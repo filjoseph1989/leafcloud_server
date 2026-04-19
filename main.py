@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, date
-from fastapi import FastAPI, Form, Depends, HTTPException, Header
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Form, Depends, HTTPException, Header, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import socket
 import anyio
 import image_filtering
+import shutil
 from urllib.parse import urlparse
 
 from database import get_db, engine, Base
@@ -31,6 +32,9 @@ active_bucket_id: Optional[str] = None
 active_experiment_id: Optional[str] = None
 restart_requested: bool = False
 ph_update_requested: bool = False
+ec_calibration_requested: bool = False
+ph_401_calibration_requested: bool = False
+ph_686_calibration_requested: bool = False
 
 # --- Video Management ---
 class VideoManager:
@@ -188,6 +192,12 @@ except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
     model = None
 
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("leafcloud")
+
 # Initialize IoT Controller with dependencies
 init_iot_controller(
     model=model,
@@ -228,8 +238,121 @@ def get_current_status():
         "active_experiment_id": active_experiment_id,
         "restart_requested": restart_requested,
         "ph_update_requested": ph_update_requested,
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested,
         "server_time": datetime.now().isoformat()
     }
+
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices, field_validator
+
+class CalibrationType(str, Enum):
+    EC = "ec"
+    PH_401 = "ph_4.01"
+    PH_686 = "ph_6.86"
+    CLEAR = "clear"
+
+class CalibrationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    
+    calibration_type: CalibrationType = Field(..., validation_alias=AliasChoices("calibration_type", "type", "cal_type"))
+
+    @field_validator("calibration_type", mode="before")
+    @classmethod
+    def validate_calibration_type(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return v
+        
+        v_lower = v.lower().replace(" ", "_").replace("-", "_")
+        
+        # Mapping common variations
+        mapping = {
+            "ph401": "ph_4.01",
+            "ph_401": "ph_4.01",
+            "ph4.01": "ph_4.01",
+            "ph686": "ph_6.86",
+            "ph_686": "ph_6.86",
+            "ph6.86": "ph_6.86",
+            "ec": "ec",
+            "clear": "clear"
+        }
+        return mapping.get(v_lower, v_lower)
+
+@app.post("/control/request-calibration")
+async def request_calibration(request: Request):
+    """
+    Sets the global calibration request flags.
+    Handles various payload formats from the Mobile App.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    
+    body_bytes = await request.body()
+    body_str = body_bytes.decode()
+    
+    try:
+        data = await request.json()
+    except Exception:
+        logger.error(f"❌ Failed to parse JSON from body: {body_str}")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.info(f"📥 Received Calibration Request: {data}")
+
+    # Try to parse with the model to use the mapping/aliases
+    try:
+        cal_req = CalibrationRequest.model_validate(data)
+        cal_type = cal_req.calibration_type
+    except Exception as e:
+        logger.warning(f"⚠️ Model validation failed, trying manual fallback: {e}")
+        # Manual fallback if model fails
+        cal_type_raw = data.get("calibration_type") or data.get("type") or data.get("cal_type")
+        if not cal_type_raw:
+            logger.error(f"❌ Missing calibration type in payload: {data}")
+            return JSONResponse(status_code=422, content={"detail": "Missing calibration type", "received": data})
+        
+        # Simple manual normalization
+        cal_type = str(cal_type_raw).lower().replace(" ", "_")
+        if "4.01" in cal_type or "401" in cal_type:
+            cal_type = CalibrationType.PH_401
+        elif "6.86" in cal_type or "686" in cal_type:
+            cal_type = CalibrationType.PH_686
+        elif "ec" in cal_type:
+            cal_type = CalibrationType.EC
+        else:
+            cal_type = CalibrationType.CLEAR
+
+    # Reset all first
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+
+    if cal_type == CalibrationType.EC:
+        ec_calibration_requested = True
+    elif cal_type == CalibrationType.PH_401:
+        ph_401_calibration_requested = True
+    elif cal_type == CalibrationType.PH_686:
+        ph_686_calibration_requested = True
+    
+    print(f"🧪 Calibration set to: {cal_type}")
+    return {
+        "status": "success", 
+        "calibration_type": cal_type,
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested
+    }
+
+@app.post("/control/acknowledge-calibration")
+def acknowledge_calibration():
+    """
+    Clears all global calibration request flags.
+    Called by the IoT device once calibration is complete.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+    print("✅ Calibration acknowledged by IoT device. Flags reset.")
+    return {"status": "success", "message": "All calibration flags reset"}
 
 @app.post("/control/request-ph-update")
 def request_ph_update():
@@ -297,7 +420,7 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
     """
     Updates the global active bucket ID and ensures a corresponding experiment exists.
     """
-    global active_bucket_id
+    global active_bucket_id, active_experiment_id
 
     # Log request to file for easier debugging
     with open("control_requests.log", "a") as f:
@@ -305,6 +428,7 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
 
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
+        active_experiment_id = None
         return {
             "status": "success",
             "active_bucket_id": None,
@@ -316,12 +440,15 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
 
     # 2. Ensure an experiment exists for this bucket (Auto-Initialization)
     experiment = resolve_experiment(db, bucket_label=active_bucket_id)
+    
+    # 3. Update global active_experiment_id string
+    active_experiment_id = experiment.experiment_id
 
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
-        "experiment_id": experiment.experiment_id,
-        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {experiment.experiment_id}"
+        "experiment_id": active_experiment_id,
+        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {active_experiment_id}"
     }
 
 @app.post("/auth/login")
@@ -689,10 +816,19 @@ def list_images(
     if not os.path.exists(image_dir):
         return []
 
-    # 1. Get all image files from disk
-    files = sorted([f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))], reverse=True)
+    # 1. Get all image files from disk recursively
+    files = []
+    for root, _, filenames in os.walk(image_dir):
+        for f in filenames:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
+                # Store relative path from images/
+                rel_path = os.path.relpath(os.path.join(root, f), image_dir)
+                files.append(rel_path)
+    
+    # Sort by filename (which includes timestamp)
+    files.sort(reverse=True)
 
-    # Apply pagination to file list first to avoid massive DB queries
+    # Apply pagination to file list
     paginated_files = files[skip : skip + limit]
 
     # 2. Query DB for these specific files in a single batch
@@ -775,10 +911,14 @@ def delete_image(
 
     # 3. Path Traversal Protection & Existence Check
     image_dir = "images"
-    if "/" in clean_filename or "\\" in clean_filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    # Secure path resolution
+    abs_image_dir = os.path.abspath(image_dir)
+    file_path = os.path.abspath(os.path.join(image_dir, clean_filename))
+    
+    if not file_path.startswith(abs_image_dir):
+        raise HTTPException(status_code=400, detail="Invalid path traversal attempt")
 
-    file_path = os.path.join(image_dir, clean_filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
 
@@ -807,7 +947,7 @@ class PreFilterRequest(BaseModel):
     green_threshold: float = Field(default=50.0, description="Minimum greenness percentage")
 
 @app.post("/api/v1/images/pre-filter")
-async def pre_filter_images(request: PreFilterRequest):
+async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get_db)):
     """
     Triggers the automated pre-filtering process for images.
     - Deletes metadata
@@ -826,13 +966,73 @@ async def pre_filter_images(request: PreFilterRequest):
             image_dir,
             trash_dir,
             request.size_threshold,
-            request.green_threshold
+            request.green_threshold,
+            db
         )
         print(f"✅ PRE-FILTER COMPLETE: {stats}")
         return {"status": "success", "stats": stats}
     except Exception as e:
         print(f"❌ PRE-FILTER ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class RestoreRequest(BaseModel):
+    log_ids: list[int] = Field(..., description="List of log IDs to restore from trash")
+
+@app.post("/api/v1/images/restore")
+async def restore_images(
+    request: RestoreRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Restores images from temp_trash to their original location based on log entries.
+    """
+    # 1. Auth Check
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 2. Fetch all requested logs
+    logs = db.query(models.AutomatedActionLog).filter(models.AutomatedActionLog.id.in_(request.log_ids)).all()
+    
+    if len(logs) != len(request.log_ids):
+        found_ids = [l.id for l in logs]
+        missing_ids = list(set(request.log_ids) - set(found_ids))
+        raise HTTPException(status_code=400, detail=f"Some log IDs not found: {missing_ids}")
+
+    # 3. Define the synchronous blocking task
+    def perform_restore(logs_list):
+        # Pre-flight check: Ensure all files exist in current_path
+        for log in logs_list:
+            if not os.path.exists(log.current_path):
+                raise ValueError(f"File {log.filename} (ID {log.id}) not found in trash: {log.current_path}")
+
+        restored_count = 0
+        for log in logs_list:
+            # Ensure destination directory exists
+            os.makedirs(os.path.dirname(log.original_path), exist_ok=True)
+            
+            # Move file back
+            shutil.move(log.current_path, log.original_path)
+            
+            # Delete log entry
+            db.delete(log)
+            restored_count += 1
+        return restored_count
+
+    # 4. Run restoration in a separate thread
+    try:
+        restored_count = await anyio.to_thread.run_sync(perform_restore, logs)
+        db.commit()
+        print(f"♻️ Restored {restored_count} images from trash.")
+        return {"status": "success", "message": f"Restored {restored_count} images", "restored_count": restored_count}
+        
+    except ValueError as ve:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        db.rollback()
+        print(f"❌ RESTORE ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
