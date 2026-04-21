@@ -22,7 +22,15 @@ def get_trashed_images(
 ):
     """
     Returns a list of images that were moved to trash by automated processes.
-    Sorted by timestamp (newest first).
+    
+    Args:
+        skip (int): Number of items to skip for pagination.
+        limit (int): Maximum number of items to return (capped at 100).
+        authorization (str): Auth token.
+        db (Session): Database session.
+
+    Returns:
+        List[TrashItemResponse]: List of trashed image metadata.
     """
     # 1. Auth Check
     if authorization != "demo-access-token-xyz-789":
@@ -37,15 +45,30 @@ def get_trashed_images(
         .order_by(models.AutomatedActionLog.timestamp.desc())
         
     items = query.offset(skip).limit(limit).all()
+    
+    # Manually populate image_url for each item
+    for item in items:
+        # Map current_path to a web-accessible URL
+        # e.g., 'images/temp_trash/file.jpg' -> '/images/temp_trash/file.jpg'
+        if item.current_path:
+            item.image_url = f"/{item.current_path.replace('\\', '/')}"
+            
     return items
 
 @images_router.post("/pre-filter")
 async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get_db)):
     """
     Triggers the automated pre-filtering process for images.
-    - Deletes metadata
-    - Deletes corrupted files
-    - Moves non-green images to temp_trash
+    
+    The process deletes metadata for corrupt files and moves images with low greenness 
+    to a temporary trash directory.
+
+    Args:
+        request (PreFilterRequest): Filtering thresholds (size and greenness).
+        db (Session): Database session.
+
+    Returns:
+        dict: Status message and processing statistics.
     """
     print(f"📡 API REQUEST: Image Pre-Filtering (size={request.size_threshold}, green={request.green_threshold})")
     
@@ -76,6 +99,14 @@ async def restore_images(
 ):
     """
     Restores images from temp_trash to their original location based on log entries.
+
+    Args:
+        request (RestoreRequest): List of log IDs to restore.
+        authorization (str): Auth token.
+        db (Session): Database session.
+
+    Returns:
+        dict: Status message and count of restored images.
     """
     # 1. Auth Check
     if authorization != "demo-access-token-xyz-789":
@@ -94,10 +125,10 @@ async def restore_images(
         if not os.path.exists(log.current_path):
             raise HTTPException(status_code=400, detail=f"File {log.filename} (ID {log.id}) not found in trash: {log.current_path}")
 
-    # 4. Perform restoration
-    restored_count = 0
-    try:
-        for log in logs:
+    # 4. Define the synchronous blocking task for restoration
+    def perform_restore(logs_list):
+        restored_count = 0
+        for log in logs_list:
             # Ensure destination directory exists
             os.makedirs(os.path.dirname(log.original_path), exist_ok=True)
             
@@ -107,7 +138,11 @@ async def restore_images(
             # Delete log entry
             db.delete(log)
             restored_count += 1
-            
+        return restored_count
+
+    # 5. Run restoration in a separate thread to avoid blocking
+    try:
+        restored_count = await anyio.to_thread.run_sync(perform_restore, logs)
         db.commit()
         print(f"♻️ Restored {restored_count} images from trash.")
         return {"status": "success", "message": f"Restored {restored_count} images", "restored_count": restored_count}
@@ -125,6 +160,14 @@ def delete_image(
 ):
     """
     Deletes an image from the filesystem and removes its metadata from the DB if present.
+
+    Args:
+        filename (str): The filename or path of the image to delete.
+        authorization (str): Auth token.
+        db (Session): Database session.
+
+    Returns:
+        dict: Success message.
     """
     # 1. Authentication Check
     if authorization != "demo-access-token-xyz-789":

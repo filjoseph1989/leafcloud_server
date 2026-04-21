@@ -27,14 +27,15 @@ CAL_POINTS = [
 
 CALIBRATION_FILE = "calibration_config.json"
 
-# MacBook Networking Configuration
-MACBOOK_IP = "192.168.1.7"
-FASTAPI_URL = f"http://{MACBOOK_IP}:8000/iot/sensor_data/"
-CONTROL_URL = f"http://{MACBOOK_IP}:8000/control/current-status"
+# Server Configuration
+# Prefer environment variable, else default to 192.168.1.10
+SERVER_IP = os.getenv("SERVER_IP", "192.168.1.10")
+FASTAPI_URL = f"http://{SERVER_IP}:8000/iot/sensor_data/"
+CONTROL_URL = f"http://{SERVER_IP}:8000/control/current-status"
 
-# Camera stream command (UDP to MacBook)
-# rpicam-vid is the new standard on Raspberry Pi OS (Bookworm)
-CAMERA_CMD = f"rpicam-vid -t 0 --inline --codec h264 --width 640 --height 480 --framerate 30 -o udp://{MACBOOK_IP}:5000"
+# Camera stream command (UDP to Server)
+# -g 30 ensures a keyframe every second. --flush helps WSL handle UDP packets more reliably.
+CAMERA_CMD = f"rpicam-vid -t 0 --inline -g 30 --flush --codec h264 --width 640 --height 480 --framerate 30 -o udp://{SERVER_IP}:5000"
 
 def save_calibration():
     """Persists the current calibration values to a local file."""
@@ -174,7 +175,7 @@ def handle_restart(cam_proc):
     print("\n⚠️ Restart requested by server. Acknowledging and restarting...")
     try:
         # 1. Acknowledge
-        ACK_URL = f"http://{MACBOOK_IP}:8000/control/acknowledge-restart"
+        ACK_URL = f"http://{SERVER_IP}:8000/control/acknowledge-restart"
         requests.post(ACK_URL, timeout=2.0)
     except Exception as e:
         print(f"Failed to acknowledge restart: {e}")
@@ -193,7 +194,7 @@ def start_camera():
     Returns:
         subprocess.Popen: The camera process instance, or None on failure.
     """
-    print(f"📸 Starting Camera Stream (UDP to {MACBOOK_IP}:5000)...")
+    print(f"📸 Starting Camera Stream (UDP to {SERVER_IP}:5000)...")
     try:
         cam_proc = subprocess.Popen(
             CAMERA_CMD,
@@ -219,12 +220,10 @@ def start_camera():
                         event.set()
                 # Keep reading the pipe to prevent the process from blocking
             event.set() # Ensure we don't block forever if process ends early
-
         threading.Thread(target=monitor_camera, args=(cam_proc, logs_done), daemon=True).start()
 
         # Wait for the first 5 lines or timeout
         logs_done.wait(timeout=5.0)
-
         return cam_proc
     except Exception as e:
         print(f"❌ Failed to start camera: {e}")
@@ -383,7 +382,7 @@ def main():
                     local_status = "Real-time"
 
                     # Send FIFO update to server while session is active
-                    UPDATE_URL = f"http://{MACBOOK_IP}:8000/iot/experiments/{experiment_id}/update-ph"
+                    UPDATE_URL = f"http://{SERVER_IP}:8000/iot/experiments/{experiment_id}/update-ph"
                     try:
                         up_resp = requests.post(UPDATE_URL, json={"ph": round(current_ph, 2)}, timeout=5.0)
                         if up_resp.status_code == 200:
