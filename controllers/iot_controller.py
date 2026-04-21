@@ -281,12 +281,16 @@ async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     active_id = get_active_bucket_id()
     final_bucket_label = data.bucket_id if data.bucket_id else active_id
     print(f"🪣 [create_sensor_data] Using bucket label: {final_bucket_label}")
-
     # --- IMAGE CAPTURE ---
-    timestamp_str = (data.timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    timestamp_now = data.timestamp or datetime.now()
+    date_str = timestamp_now.strftime("%Y-%m-%d")
+    timestamp_str = timestamp_now.strftime("%Y%m%d_%H%M%S")
     image_filename = f"reading_{final_bucket_label}_{timestamp_str}.jpg"
-    os.makedirs("images", exist_ok=True)
-    image_path = os.path.join("images", image_filename)
+
+    # Hierarchical Path: images/YYYY-MM-DD/BucketLabel/filename.jpg
+    image_dir = os.path.join("images", date_str, final_bucket_label)
+    os.makedirs(image_dir, exist_ok=True)
+    image_path = os.path.join(image_dir, image_filename)
 
     if not capture_frame(image_path):
         print(f"⚠️ [create_sensor_data] Capture failed, continuing without image.")
@@ -331,9 +335,15 @@ async def upload_from_iot(
     Receives multipart data (image + sensors) from the Pi and performs AI analysis.
     """
     # A. Save Image
-    os.makedirs("images", exist_ok=True)
-    filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{image.filename}"
-    file_path = os.path.join("images", filename)
+    timestamp_now = datetime.now()
+    date_str = timestamp_now.strftime("%Y-%m-%d")
+    timestamp_str = timestamp_now.strftime("%Y%m%d_%H%M%S")
+    
+    # Standard Filename: reading_<TYPE>_<YYYYMMDD>_<HHMMSS>.jpg
+    filename = f"reading_{bucket_label}_{timestamp_str}.jpg"
+    image_dir = os.path.join("images", date_str, bucket_label)
+    os.makedirs(image_dir, exist_ok=True)
+    file_path = os.path.join(image_dir, filename)
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)

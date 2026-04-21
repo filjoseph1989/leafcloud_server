@@ -49,13 +49,13 @@ def setup_test_env(db_session):
 
 def test_delete_image_unauthorized(client):
     """Should return 401 if token is missing or invalid."""
-    response = client.delete("/admin/images/synced_delete_test.jpg")
+    response = client.delete("/api/v1/images/synced_delete_test.jpg")
     assert response.status_code == 401
 
 def test_delete_image_non_existent(client):
     """Should return 404 if file does not exist."""
     headers = {"Authorization": "demo-access-token-xyz-789"}
-    response = client.delete("/admin/images/non_existent.jpg", headers=headers)
+    response = client.delete("/api/v1/images/non_existent.jpg", headers=headers)
     assert response.status_code == 404
 
 def test_delete_image_synced_success(client, db_session, setup_test_env):
@@ -67,7 +67,7 @@ def test_delete_image_synced_success(client, db_session, setup_test_env):
     assert os.path.exists(os.path.join("images", filename))
     assert db_session.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}")).first() is not None
 
-    response = client.delete(f"/admin/images/{filename}", headers=headers)
+    response = client.delete(f"/api/v1/images/{filename}", headers=headers)
     assert response.status_code == 200
     assert response.json()["status"] == "success"
 
@@ -83,7 +83,7 @@ def test_delete_image_orphaned_success(client, setup_test_env):
     # Verify before
     assert os.path.exists(os.path.join("images", filename))
 
-    response = client.delete(f"/admin/images/{filename}", headers=headers)
+    response = client.delete(f"/api/v1/images/{filename}", headers=headers)
     assert response.status_code == 200
     assert response.json()["status"] == "success"
 
@@ -101,7 +101,7 @@ def test_delete_image_with_prefix_success(client, setup_test_env):
     
     path_with_prefix = f"images/{filename}"
     
-    response = client.delete(f"/admin/images/{path_with_prefix}", headers=headers)
+    response = client.delete(f"/api/v1/images/{path_with_prefix}", headers=headers)
     
     assert response.status_code == 200
     assert response.json()["status"] == "success"

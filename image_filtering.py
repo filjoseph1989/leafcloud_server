@@ -2,6 +2,8 @@ import os
 import cv2
 import numpy as np
 import shutil
+import uuid
+from models import AutomatedActionLog
 
 def is_macos_metadata(filename: str) -> bool:
     """Checks if a file is a macOS metadata file (starts with ._)."""
@@ -86,13 +88,14 @@ def is_mostly_green(image_path: str, threshold: float) -> bool:
     """Checks if an image has more green than the threshold percentage."""
     return calculate_greenness(image_path) >= threshold
 
-def process_image_batch(directory: str, trash_dir: str, size_threshold: int, green_threshold: float) -> dict:
+def process_image_batch(directory: str, trash_dir: str, size_threshold: int, green_threshold: float, db=None) -> dict:
     """
     Processes a batch of images:
     - Deletes macOS metadata (._*)
     - Deletes corrupted files (size < threshold)
     - Moves non-green images to trash_dir
     - Keeps mostly green images
+    - Logs actions to DB if session provided
     Returns a dictionary of statistics.
     """
     stats = {
@@ -109,42 +112,80 @@ def process_image_batch(directory: str, trash_dir: str, size_threshold: int, gre
     if not os.path.exists(trash_dir):
         os.makedirs(trash_dir, exist_ok=True)
         
-    for filename in os.listdir(directory):
-        file_path = os.path.join(directory, filename)
-        
-        # Only process files
-        if not os.path.isfile(file_path):
+    for dirpath, _dirnames, filenames in os.walk(directory):
+        # Skip the trash directory itself to avoid recursive processing
+        if os.path.abspath(dirpath) == os.path.abspath(trash_dir):
             continue
             
-        stats["total_processed"] += 1
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
             
-        # 1. macOS Metadata
-        if is_macos_metadata(filename):
-            try:
-                os.remove(file_path)
-                stats["deleted_metadata"] += 1
-            except OSError:
-                pass
-            continue
-            
-        # 2. Corrupted File
-        if is_corrupted_file(file_path, size_threshold):
-            try:
-                os.remove(file_path)
-                stats["deleted_corrupted"] += 1
-            except OSError:
-                pass
-            continue
-            
-        # 3. Greenness Test
-        if is_mostly_green(file_path, green_threshold):
-            stats["kept"] += 1
-        else:
-            try:
-                # Move to trash instead of permanent deletion
-                shutil.move(file_path, os.path.join(trash_dir, filename))
-                stats["moved_to_trash"] += 1
-            except (OSError, shutil.Error):
-                pass
+            stats["total_processed"] += 1
+                
+            # 1. macOS Metadata
+            if is_macos_metadata(filename):
+                try:
+                    os.remove(file_path)
+                    stats["deleted_metadata"] += 1
+                    if db:
+                        log = AutomatedActionLog(
+                            filename=filename,
+                            original_path=file_path,
+                            current_path="DELETED",
+                            action_type="permanent_delete",
+                            reason="macos_metadata"
+                        )
+                        db.add(log)
+                except OSError:
+                    pass
+                continue
+                
+            # 2. Corrupted File
+            if is_corrupted_file(file_path, size_threshold):
+                try:
+                    size = os.path.getsize(file_path)
+                    os.remove(file_path)
+                    stats["deleted_corrupted"] += 1
+                    if db:
+                        log = AutomatedActionLog(
+                            filename=filename,
+                            original_path=file_path,
+                            current_path="DELETED",
+                            action_type="permanent_delete",
+                            reason="corrupted_size",
+                            metric_value=float(size)
+                        )
+                        db.add(log)
+                except OSError:
+                    pass
+                continue
+                
+            # 3. Greenness Test
+            greenness = calculate_greenness(file_path)
+            if greenness >= green_threshold:
+                stats["kept"] += 1
+            else:
+                try:
+                    # Move to trash instead of permanent deletion
+                    # Use unique filename to avoid collisions during recursive walks
+                    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+                    dest_path = os.path.join(trash_dir, unique_filename)
+                    shutil.move(file_path, dest_path)
+                    stats["moved_to_trash"] += 1
+                    if db:
+                        log = AutomatedActionLog(
+                            filename=filename,
+                            original_path=file_path,
+                            current_path=dest_path,
+                            action_type="move_to_trash",
+                            reason="low_greenness",
+                            metric_value=greenness
+                        )
+                        db.add(log)
+                except (OSError, shutil.Error):
+                    pass
+                    
+    if db:
+        db.commit()
                 
     return stats
