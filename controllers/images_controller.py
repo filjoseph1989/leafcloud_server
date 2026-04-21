@@ -181,10 +181,13 @@ def delete_image(
     image_dir = "images"
     trash_dir = os.path.join(image_dir, "temp_trash")
 
-    if "/" in clean_filename or "\\" in clean_filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    # Resolve absolute paths to prevent traversal
+    abs_image_dir = os.path.abspath(image_dir)
+    file_path = os.path.abspath(os.path.join(image_dir, clean_filename))
 
-    file_path = os.path.join(image_dir, clean_filename)
+    if not file_path.startswith(abs_image_dir):
+        raise HTTPException(status_code=400, detail="Invalid filename or path traversal attempt")
+
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
 
@@ -197,11 +200,11 @@ def delete_image(
 
     # 5. Filesystem Move to Trash
     try:
-        if not os.path.exists(trash_dir):
-            os.makedirs(trash_dir, exist_ok=True)
-            
         unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
         dest_path = os.path.join(trash_dir, unique_filename)
+        
+        # Ensure the destination directory exists (for subdirectories)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         
         shutil.move(file_path, dest_path)
         

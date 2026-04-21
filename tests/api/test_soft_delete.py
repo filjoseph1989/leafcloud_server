@@ -2,6 +2,7 @@ import pytest
 import os
 import models
 from datetime import datetime
+import uuid
 
 @pytest.fixture
 def setup_soft_delete_env(db_session):
@@ -60,7 +61,8 @@ def setup_soft_delete_env(db_session):
         os.remove(image_path)
     if os.path.exists(trash_dir):
         for f in os.listdir(trash_dir):
-            os.remove(os.path.join(trash_dir, f))
+            if os.path.isfile(os.path.join(trash_dir, f)):
+                os.remove(os.path.join(trash_dir, f))
 
 def test_soft_delete_success(client, db_session, setup_soft_delete_env):
     """
@@ -103,3 +105,51 @@ def test_soft_delete_success(client, db_session, setup_soft_delete_env):
     assert log is not None
     assert log.action_type == "move_to_trash"
     assert found[0] in log.current_path
+
+def test_soft_delete_subdirectory_success(client, db_session):
+    """Test that images in subdirectories can be soft-deleted."""
+    test_image_dir = "images"
+    sub_relative_path = "2026-04-21/Water"
+    sub_dir = os.path.join(test_image_dir, sub_relative_path)
+    if not os.path.exists(sub_dir):
+        os.makedirs(sub_dir)
+    
+    filename = "sub_dir_test.jpg"
+    clean_filename = f"{sub_relative_path}/{filename}"
+    image_path = os.path.join(sub_dir, filename)
+    with open(image_path, "w") as f:
+        f.write("mock data")
+
+    headers = {"Authorization": "demo-access-token-xyz-789"}
+
+    # Execute DELETE
+    response = client.delete(f"/api/v1/images/{clean_filename}", headers=headers)
+    assert response.status_code == 200
+    assert "moved to trash" in response.json()["message"]
+
+    # Verify file moved to trash
+    trash_dir = "images/temp_trash"
+    # Note: Our implementation replaces slashes with nothing in filename, 
+    # but the clean_filename used in unique_filename still has them.
+    # unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
+    # dest_path = os.path.join(trash_dir, unique_filename)
+    
+    assert not os.path.exists(image_path)
+    
+    # Cleanup trash and created subdirs
+    if os.path.exists(trash_dir):
+        for root, dirs, files in os.walk(trash_dir, topdown=False):
+            for name in files:
+                if filename in name:
+                    os.remove(os.path.join(root, name))
+            for name in dirs:
+                dir_p = os.path.join(root, name)
+                if not os.listdir(dir_p):
+                    os.rmdir(dir_p)
+    
+    # Cleanup source subdirs
+    if os.path.exists(sub_dir) and not os.listdir(sub_dir):
+        os.rmdir(sub_dir)
+        parent_sub = os.path.dirname(sub_dir)
+        if os.path.exists(parent_sub) and not os.listdir(parent_sub):
+            os.rmdir(parent_sub)
