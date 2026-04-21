@@ -1,6 +1,7 @@
 import os
 import shutil
 import anyio
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -159,7 +160,7 @@ def delete_image(
     db: Session = Depends(get_db)
 ):
     """
-    Deletes an image from the filesystem and removes its metadata from the DB if present.
+    Moves an image to temp_trash and marks its DB record as deleted.
 
     Args:
         filename (str): The filename or path of the image to delete.
@@ -178,28 +179,49 @@ def delete_image(
 
     # 3. Path Traversal Protection & Existence Check
     image_dir = "images"
-    if "/" in clean_filename or "\\" in clean_filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    trash_dir = os.path.join(image_dir, "temp_trash")
 
-    file_path = os.path.join(image_dir, clean_filename)
+    # Resolve absolute paths to prevent traversal
+    abs_image_dir = os.path.abspath(image_dir)
+    file_path = os.path.abspath(os.path.join(image_dir, clean_filename))
+
+    if not file_path.startswith(abs_image_dir):
+        raise HTTPException(status_code=400, detail="Invalid filename or path traversal attempt")
+
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
 
-    # 4. Database Cleanup (if record exists)
+    # 4. Database Soft Cleanup (if record exists)
     reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{clean_filename}")).first()
 
     if reading:
-        db.query(models.NPKPrediction).filter(models.NPKPrediction.daily_reading_id == reading.id).delete()
-        db.delete(reading)
-        db.commit()
-        print(f"🗑️ Deleted DB record for reading ID: {reading.id}")
+        reading.status = "deleted"
+        print(f"♻️ Marked DB record as deleted for reading ID: {reading.id}")
 
-    # 5. Filesystem Deletion
+    # 5. Filesystem Move to Trash
     try:
-        os.remove(file_path)
-        print(f"🗑️ Deleted file from disk: {file_path}")
+        unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
+        dest_path = os.path.join(trash_dir, unique_filename)
+        
+        # Ensure the destination directory exists (for subdirectories)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        
+        shutil.move(file_path, dest_path)
+        
+        # Log the action
+        log = models.AutomatedActionLog(
+            filename=clean_filename,
+            original_path=file_path,
+            current_path=dest_path,
+            action_type="move_to_trash",
+            reason="api_requested_delete"
+        )
+        db.add(log)
+        db.commit()
+        print(f"🗑️ Moved file to trash: {dest_path}")
     except Exception as e:
-        print(f"❌ Failed to delete file: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+        db.rollback()
+        print(f"❌ Failed to move file to trash: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing deletion: {str(e)}")
 
-    return {"status": "success", "message": f"Image {clean_filename} and associated data deleted"}
+    return {"status": "success", "message": f"Image {clean_filename} moved to trash and records updated"}

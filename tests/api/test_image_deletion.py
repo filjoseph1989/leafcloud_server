@@ -59,7 +59,7 @@ def test_delete_image_non_existent(client):
     assert response.status_code == 404
 
 def test_delete_image_synced_success(client, db_session, setup_test_env):
-    """Should delete file and DB record."""
+    """Should move file to trash and soft-delete DB record."""
     filename = "synced_delete_test.jpg"
     headers = {"Authorization": "demo-access-token-xyz-789"}
     
@@ -69,14 +69,20 @@ def test_delete_image_synced_success(client, db_session, setup_test_env):
 
     response = client.delete(f"/api/v1/images/{filename}", headers=headers)
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
+    assert "moved to trash" in response.json()["message"]
 
     # Verify after
     assert not os.path.exists(os.path.join("images", filename))
-    assert db_session.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}")).first() is None
+    reading = db_session.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{filename}")).first()
+    assert reading is not None
+    assert reading.status == "deleted"
+    
+    # Verify file in trash
+    trash_dir = "images/temp_trash"
+    assert any(filename in f for f in os.listdir(trash_dir))
 
 def test_delete_image_orphaned_success(client, setup_test_env):
-    """Should delete file from disk even if no DB record."""
+    """Should move orphaned file to trash."""
     filename = "orphaned_delete_test.jpg"
     headers = {"Authorization": "demo-access-token-xyz-789"}
     
@@ -85,13 +91,15 @@ def test_delete_image_orphaned_success(client, setup_test_env):
 
     response = client.delete(f"/api/v1/images/{filename}", headers=headers)
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
+    assert "moved to trash" in response.json()["message"]
 
     # Verify after
     assert not os.path.exists(os.path.join("images", filename))
+    trash_dir = "images/temp_trash"
+    assert any(filename in f for f in os.listdir(trash_dir))
 
 def test_delete_image_with_prefix_success(client, setup_test_env):
-    """Should delete file even if 'images/' prefix is passed in the path."""
+    """Should move file to trash even if 'images/' prefix is passed."""
     test_image_dir = "images"
     filename = "prefix_test.jpg"
     with open(os.path.join(test_image_dir, filename), "w") as f:
@@ -104,5 +112,7 @@ def test_delete_image_with_prefix_success(client, setup_test_env):
     response = client.delete(f"/api/v1/images/{path_with_prefix}", headers=headers)
     
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
+    assert "moved to trash" in response.json()["message"]
     assert not os.path.exists(os.path.join("images", filename))
+    trash_dir = "images/temp_trash"
+    assert any(filename in f for f in os.listdir(trash_dir))
