@@ -1,8 +1,0 @@
-{
-  "track_id": "trash_api_20260419",
-  "type": "feature",
-  "status": "new",
-  "created_at": "2026-04-19T00:00:00Z",
-  "updated_at": "2026-04-19T00:00:00Z",
-  "description": "Create a new GET /api/v1/images/trash endpoint to list trashed images, and refactor image-related administrative logic (pre-filter, restore, delete, and the new trash listing) from main.py into a new controllers/images_controller.py file."
-}
