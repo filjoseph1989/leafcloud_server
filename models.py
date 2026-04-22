@@ -87,3 +87,14 @@ class AutomatedActionLog(Base):
     reason = Column(String(100))     # e.g., "low_greenness", "corrupted_size"
     metric_value = Column(Float, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+class ImageCropProgress(Base):
+    """
+    Tracks which raw images have been processed (cropped or skipped).
+    """
+    __tablename__ = "image_crop_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rel_path = Column(String(255), unique=True, index=True) # Normalized relative path
+    is_processed = Column(Boolean, default=True)
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

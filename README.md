@@ -89,12 +89,12 @@ pytest --cov=main --cov=models
 ### IOT Integration
 - `POST /iot/sensor_data/`: Receive JSON payloads (temp, ph, ec) from Raspberry Pi.
 - `POST /iot/upload_data/`: Upload images and form data for AI analysis.
-- `GET /video_feed`: MJPEG proxy for live camera feed.
+- `GET /video_feed/`: MJPEG proxy for live camera feed.
 
 ### Application API
 - `POST /login`: Admin authentication.
-- `GET /app/latest_status`: Get the most recent sensor readings and AI recommendations.
-- `GET /app/history`: Retrieve historical data for analytics.
+- `GET /app/latest_status/`: Get the most recent sensor readings and AI recommendations.
+- `GET /app/history/`: Retrieve historical data for analytics.
 
 ---
 

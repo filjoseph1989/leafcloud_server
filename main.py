@@ -52,6 +52,7 @@ from database import get_db, engine, Base
 import models
 from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
 from controllers.images_controller import images_router
+from controllers.cropping_controller import cropping_router
 from schemas.images import (
     BucketLabel, ActiveBucketRequest, ExperimentCreate, ExperimentResponse,
     ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, ImageInfo,
@@ -221,6 +222,7 @@ def read_root():
 # Register Routers
 app.include_router(iot_router)
 app.include_router(images_router)
+app.include_router(cropping_router)
 
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
@@ -601,6 +603,7 @@ def generate_recommendation(n, p, k, ph, ec):
     # Priority 4: Optimal
     return "Lettuce growth is optimal. No action required."
 
+@app.get("/video_feed/")
 @app.get("/video_feed")
 async def video_feed():
     """
@@ -908,6 +911,6 @@ if __name__ == "__main__":
     print(f"\n🚀 LEAFCLOUD SERVER STARTING...")
     print(f"🔗 Local Access: http://localhost:8000")
     print(f"🔗 Network Access: http://{host_ip}:8000")
-    print(f"🎬 Video Feed: http://{host_ip}:8000/video_feed\n")
+    print(f"🎬 Video Feed: http://{host_ip}:8000/video_feed/\n")
     
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
