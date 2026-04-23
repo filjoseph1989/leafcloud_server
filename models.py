@@ -39,6 +39,7 @@ class DailyReading(Base):
     # Relationships
     experiment = relationship("Experiment", back_populates="readings")
     prediction = relationship("NPKPrediction", back_populates="daily_reading", uselist=False)
+    crops = relationship("ImageCrop", back_populates="daily_reading")
 
 class LabResult(Base):
     """
@@ -98,3 +99,17 @@ class ImageCropProgress(Base):
     rel_path = Column(String(255), unique=True, index=True) # Normalized relative path
     is_processed = Column(Boolean, default=True)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class ImageCrop(Base):
+    """
+    Stores cropped versions of an image, linked back to the original sensor reading.
+    """
+    __tablename__ = "image_crops"
+
+    id = Column(Integer, primary_key=True, index=True)
+    daily_reading_id = Column(Integer, ForeignKey("daily_readings.id"))
+    crop_path = Column(String(255))
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship
+    daily_reading = relationship("DailyReading", back_populates="crops")
