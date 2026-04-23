@@ -1,6 +1,41 @@
 import os
-from datetime import datetime
-from fastapi import FastAPI, Form, Depends, HTTPException
+import platform
+import socket
+import threading
+import time
+import cv2
+
+# --- WSL/FFMPEG Optimization (MUST BE AT TOP) ---
+if "microsoft-standard-WSL2" in platform.uname().release or platform.system() == "Darwin":
+    # We set multiple timeout variations to ensure FFmpeg picks one up
+    # buffer_size: 10MB to prevent UDP packet loss
+    # fifo_size: helps with jitter
+    # loglevel;quiet: silences annoying initialization/sync warnings
+    # protocol_whitelist: allows UDP stream
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "protocol_whitelist;file,rtp,udp|timeout;5000000|stimeout;5000000|buffer_size;10485760|fifo_size;500000|overrun_nonfatal;1|fflags;nobuffer|probesize;128000|analyzeduration;500000"
+    
+    # Debugging (optional, keeping for stability)
+    if os.getenv("DEBUG_VIDEO"):
+        os.environ["OPENCV_VIDEOIO_DEBUG"] = "1"
+        os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "48"
+
+def get_host_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
+
+from datetime import datetime, date
+from urllib.parse import urlparse
+from typing import Optional, List
+from enum import Enum
+from pydantic import BaseModel, Field, ConfigDict
+
+from fastapi import FastAPI, Form, Depends, HTTPException, Header, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -8,22 +43,32 @@ from sqlalchemy import desc
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
+import anyio
+import image_filtering
+import shutil
+from contextlib import asynccontextmanager
 
 from database import get_db, engine, Base
 import models
-from controllers.iot_controller import iot_router, init_iot_controller
-from pydantic import BaseModel, Field
-from enum import Enum
-from typing import Optional
+from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
+from controllers.images_controller import images_router
+from controllers.cropping_controller import cropping_router
+from schemas.images import (
+    BucketLabel, ActiveBucketRequest, ExperimentCreate, ExperimentResponse,
+    ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, ImageInfo,
+    ActiveExperimentRequest
+)
 
 load_dotenv()
 
-import cv2
-import time
-import threading
-
 # --- Global State ---
 active_bucket_id: Optional[str] = None
+active_experiment_id: Optional[str] = None
+restart_requested: bool = False
+ph_update_requested: bool = False
+ec_calibration_requested: bool = False
+ph_401_calibration_requested: bool = False
+ph_686_calibration_requested: bool = False
 
 # --- Video Management ---
 class VideoManager:
@@ -36,27 +81,85 @@ class VideoManager:
         self.lock = threading.Lock()
         self.running = False
         self.thread = None
+        self.is_wsl = "microsoft-standard-WSL2" in platform.uname().release
+        self.is_darwin = platform.system() == "Darwin"
+        
+        if self.is_wsl or self.is_darwin:
+            # WSL/Darwin specific listener adjustments
+            if "udp://" in self.source_url:
+                if "?listen=1" not in self.source_url:
+                    sep = "&" if "?" in self.source_url else "?"
+                    self.source_url += f"{sep}listen=1"
+                
+                # Add robustness parameters for network jitter
+                if "fifo_size" not in self.source_url:
+                    self.source_url += "&fifo_size=1000000&overrun_nonfatal=1&timeout=30000000"
+            
+            host_ip = get_host_ip()
+            port = "5000"
+            try: port = urlparse(self.source_url).port or "5000"
+            except: pass
+            
+            label = "[WSL Server]" if self.is_wsl else "[Darwin Server]"
+            print(f"📡 {label} Video Listener ACTIVATED on: {self.source_url}")
+            print(f"📡 {label} Send your camera stream to: {host_ip}:{port}")
+            print(f"💡 PI COMMAND: rpicam-vid -t 0 --inline -g 30 --flush -o udp://{host_ip}:{port}")
+            if self.is_wsl:
+                print(f"🛑 IMPORTANT: If it fails, check for other processes on port {port}: 'lsof -i :{port}'")
+                print(f"💡 DEBUG TIP: Test connectivity with 'nc -ul {port}' (it should show garbled data if streaming).")
 
     def start(self):
         if not self.running:
             self.running = True
             self.thread = threading.Thread(target=self._worker, daemon=True)
             self.thread.start()
-            print(f"📹 Video Manager started for {self.source_url}")
+            print(f"📹 Video Manager: Starting for {self.source_url}")
 
     def stop(self):
         self.running = False
         if self.thread:
-            self.thread.join(timeout=2.0)
-            print("📹 Video Manager stopped.")
+            self.thread.join(timeout=1.0)
+            self.thread = None
 
     def _worker(self):
+        port = "5000"
+        try:
+            parsed = urlparse(self.source_url)
+            port = parsed.port or "5000"
+        except: pass
+
         while self.running:
-            print(f"📹 Video Manager: Attempting to connect to {self.source_url}")
-            cap = cv2.VideoCapture(self.source_url)
+            # Pre-check port on Darwin/WSL to avoid hanging
+            if self.is_wsl or self.is_darwin:
+                try:
+                    test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    test_sock.bind(("0.0.0.0", int(port)))
+                    test_sock.close()
+                except Exception as e:
+                    print(f"⚠️ Video Manager: Port {port} seems busy ({e}). Retrying in 5s...")
+                    time.sleep(5.0)
+                    continue
+
+            # On WSL, forcing CAP_FFMPEG is often necessary
+            cap = cv2.VideoCapture(self.source_url, cv2.CAP_FFMPEG)
+            
+            # Fallback: If it fails with full parameters, try a simpler URL
+            if not cap.isOpened() and "?" in self.source_url:
+                simple_url = self.source_url.split("?")[0]
+                print(f"⚠️ Video Manager: Retrying with simple URL: {simple_url}")
+                cap = cv2.VideoCapture(simple_url, cv2.CAP_FFMPEG)
+            
             if not cap.isOpened():
-                print(f"⚠️ Video Manager: Could not open {self.source_url}. Retrying in 2s...")
-                time.sleep(2.0)
+                print(f"❌ Video Manager: Could not open {self.source_url}.")
+                print(f"   1. Check if the Raspberry Pi is actually streaming to {port}.")
+                if self.is_wsl:
+                    print(f"   2. IMPORTANT: Allow UDP port {port} in Windows Firewall (not just WSL).")
+                    print(f"   3. WSL2 Tip: Try using the Windows Host IP (from ipconfig) in the Pi command.")
+                    print(f"   4. Run 'python debug_video.py' for standalone diagnostics.")
+                else:
+                    print(f"   2. Check your firewall for UDP port {port}.")
+                time.sleep(3.0)
                 continue
 
             print(f"✅ Video Manager: Connected to {self.source_url}")
@@ -80,27 +183,6 @@ class VideoManager:
 
 video_manager = VideoManager()
 
-# --- Models & Enums ---
-class BucketLabel(str, Enum):
-    NPK = "NPK"
-    Micro = "Micro"
-    Mix = "Mix"
-    Water = "Water"
-    STOP = "STOP"
-
-class ActiveBucketRequest(BaseModel):
-    bucket_id: BucketLabel
-
-# Ensure tables exist
-Base.metadata.create_all(bind=engine)
-
-
-# --- Auth Models ---
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
 # Load AI Brain (Mock loader for now if file doesn't exist)
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -112,17 +194,35 @@ except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
     model = None
 
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("leafcloud")
+
 # Initialize IoT Controller with dependencies
 init_iot_controller(
     model=model,
     video_manager=video_manager,
-    bucket_getter=lambda: active_bucket_id
+    bucket_getter=lambda: active_bucket_id,
+    experiment_getter=lambda: active_experiment_id,
+    ph_update_getter=lambda: ph_update_requested
 )
 
 app = FastAPI(title="LEAFCLOUD API")
 
+@app.get("/")
+def read_root():
+    return {
+        "message": "Welcome to the LEAFCLOUD Server API",
+        "documentation": "/docs",
+        "status": "online"
+    }
+
 # Register Routers
 app.include_router(iot_router)
+app.include_router(images_router)
+app.include_router(cropping_router)
 
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
@@ -147,22 +247,189 @@ def get_current_status():
     """
     return {
         "active_bucket_id": active_bucket_id,
-        "server_time": datetime.now()
+        "active_experiment_id": active_experiment_id,
+        "restart_requested": restart_requested,
+        "ph_update_requested": ph_update_requested,
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested,
+        "server_time": datetime.now().isoformat()
     }
 
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices, field_validator
+
+class CalibrationType(str, Enum):
+    EC = "ec"
+    PH_401 = "ph_4.01"
+    PH_686 = "ph_6.86"
+    CLEAR = "clear"
+
+class CalibrationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    
+    calibration_type: CalibrationType = Field(..., validation_alias=AliasChoices("calibration_type", "type", "cal_type"))
+
+    @field_validator("calibration_type", mode="before")
+    @classmethod
+    def validate_calibration_type(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return v
+        
+        v_lower = v.lower().replace(" ", "_").replace("-", "_")
+        
+        # Mapping common variations
+        mapping = {
+            "ph401": "ph_4.01",
+            "ph_401": "ph_4.01",
+            "ph4.01": "ph_4.01",
+            "ph686": "ph_6.86",
+            "ph_686": "ph_6.86",
+            "ph6.86": "ph_6.86",
+            "ec": "ec",
+            "clear": "clear"
+        }
+        return mapping.get(v_lower, v_lower)
+
+@app.post("/control/request-calibration")
+async def request_calibration(request: Request):
+    """
+    Sets the global calibration request flags.
+    Handles various payload formats from the Mobile App.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    
+    body_bytes = await request.body()
+    body_str = body_bytes.decode()
+    
+    try:
+        data = await request.json()
+    except Exception:
+        logger.error(f"❌ Failed to parse JSON from body: {body_str}")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.info(f"📥 Received Calibration Request: {data}")
+
+    # Try to parse with the model to use the mapping/aliases
+    try:
+        cal_req = CalibrationRequest.model_validate(data)
+        cal_type = cal_req.calibration_type
+    except Exception as e:
+        logger.warning(f"⚠️ Model validation failed, trying manual fallback: {e}")
+        # Manual fallback if model fails
+        cal_type_raw = data.get("calibration_type") or data.get("type") or data.get("cal_type")
+        if not cal_type_raw:
+            logger.error(f"❌ Missing calibration type in payload: {data}")
+            return JSONResponse(status_code=422, content={"detail": "Missing calibration type", "received": data})
+        
+        # Simple manual normalization
+        cal_type = str(cal_type_raw).lower().replace(" ", "_")
+        if "4.01" in cal_type or "401" in cal_type:
+            cal_type = CalibrationType.PH_401
+        elif "6.86" in cal_type or "686" in cal_type:
+            cal_type = CalibrationType.PH_686
+        elif "ec" in cal_type:
+            cal_type = CalibrationType.EC
+        else:
+            cal_type = CalibrationType.CLEAR
+
+    # Reset all first
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+
+    if cal_type == CalibrationType.EC:
+        ec_calibration_requested = True
+    elif cal_type == CalibrationType.PH_401:
+        ph_401_calibration_requested = True
+    elif cal_type == CalibrationType.PH_686:
+        ph_686_calibration_requested = True
+    
+    print(f"🧪 Calibration set to: {cal_type}")
+    return {
+        "status": "success", 
+        "calibration_type": cal_type,
+        "ec_calibration_requested": ec_calibration_requested,
+        "ph_401_calibration_requested": ph_401_calibration_requested,
+        "ph_686_calibration_requested": ph_686_calibration_requested
+    }
+
+@app.post("/control/acknowledge-calibration")
+def acknowledge_calibration():
+    """
+    Clears all global calibration request flags.
+    Called by the IoT device once calibration is complete.
+    """
+    global ec_calibration_requested, ph_401_calibration_requested, ph_686_calibration_requested
+    ec_calibration_requested = False
+    ph_401_calibration_requested = False
+    ph_686_calibration_requested = False
+    print("✅ Calibration acknowledged by IoT device. Flags reset.")
+    return {"status": "success", "message": "All calibration flags reset"}
+
+@app.post("/control/request-ph-update")
+def request_ph_update():
+    """
+    Sets the global pH update request flag.
+    Called by the Mobile App.
+    """
+    global ph_update_requested
+    ph_update_requested = True
+    print("🔔 pH update requested by mobile app. Stopping VideoManager.")
+    video_manager.stop()
+    return {"status": "success", "ph_update_requested": True}
+
+@app.post("/control/acknowledge-ph-update")
+def acknowledge_ph_update():
+    """
+    Clears the global pH update request flag.
+    Called by the IoT device.
+    """
+    global ph_update_requested
+    ph_update_requested = False
+    print("✅ pH update acknowledged by IoT device. Flag reset. Restarting VideoManager.")
+    video_manager.start()
+    return {"status": "success", "ph_update_requested": False}
+
+@app.post("/control/restart-iot")
+def restart_iot():
+    """
+    Sets the global restart flag and restarts the VideoManager.
+    Called by the Mobile App.
+    """
+    global restart_requested
+    restart_requested = True
+    print("⚠️ Restart requested by mobile app. Resetting VideoManager...")
+    video_manager.stop()
+    video_manager.start()
+    return {"status": "success", "restart_requested": True}
+
+@app.post("/control/acknowledge-restart")
+def acknowledge_restart():
+    """
+    Clears the global restart flag.
+    Called by the IoT device.
+    """
+    global restart_requested
+    restart_requested = False
+    print("✅ Restart acknowledged by IoT device. Flag reset.")
+    return {"status": "success", "restart_requested": False}
+
+@app.post("/control/active-experiment")
+def set_active_experiment(request: ActiveExperimentRequest):
+    """
+    Updates the global active experiment ID.
+    Called by the Mobile App when the user starts a new crop cycle.
+    """
+    global active_experiment_id
+    active_experiment_id = request.experiment_id
+    return {"status": "success", "active_experiment_id": active_experiment_id}
+
 @app.post("/control/active-bucket")
-def set_active_bucket(request: ActiveBucketRequest):
+def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db)):
     """
-    Updates the global active bucket ID.
-    Called by the Mobile App when the user switches nutrient buckets.
-
-    Args:
-        request: An ActiveBucketRequest containing the new bucket_id.
-
-    Returns:
-        A dictionary containing the status, updated active_bucket_id, and a message.
+    Updates the global active bucket ID and ensures a corresponding experiment exists.
     """
-    global active_bucket_id
+    global active_bucket_id, active_experiment_id
 
     # Log request to file for easier debugging
     with open("control_requests.log", "a") as f:
@@ -170,13 +437,27 @@ def set_active_bucket(request: ActiveBucketRequest):
 
     if request.bucket_id == BucketLabel.STOP:
         active_bucket_id = None
-    else:
-        active_bucket_id = request.bucket_id.value
+        active_experiment_id = None
+        return {
+            "status": "success",
+            "active_bucket_id": None,
+            "message": "System stopped"
+        }
+    
+    # 1. Update in-memory state
+    active_bucket_id = request.bucket_id.value
+
+    # 2. Ensure an experiment exists for this bucket (Auto-Initialization)
+    experiment = resolve_experiment(db, bucket_label=active_bucket_id)
+    
+    # 3. Update global active_experiment_id string
+    active_experiment_id = experiment.experiment_id
 
     return {
         "status": "success",
         "active_bucket_id": active_bucket_id,
-        "message": f"Active bucket set to {active_bucket_id}"
+        "experiment_id": active_experiment_id,
+        "message": f"Active bucket set to {active_bucket_id}, linked to experiment {active_experiment_id}"
     }
 
 @app.post("/auth/login")
@@ -202,6 +483,90 @@ def login(request: LoginRequest):
         }
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.get("/test")
+def test_connection():
+    return {"status": "success", "message": "Server is reachable via this address"}
+
+# --- 2. ENDPOINTS FOR EXPERIMENTS ---
+
+@app.post("/experiments/", response_model=ExperimentResponse, status_code=201)
+def create_experiment(experiment: ExperimentCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new experiment.
+    """
+    db_experiment = db.query(models.Experiment).filter(models.Experiment.experiment_id == experiment.experiment_id).first()
+    if db_experiment:
+        raise HTTPException(status_code=400, detail="Experiment ID already exists")
+
+    new_exp = models.Experiment(
+        experiment_id=experiment.experiment_id,
+        bucket_label=experiment.bucket_label,
+        start_date=experiment.start_date
+    )
+    db.add(new_exp)
+    db.commit()
+    db.refresh(new_exp)
+    return new_exp
+
+@app.get("/experiments/", response_model=list[ExperimentResponse])
+def list_experiments(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Returns a list of all experiments.
+    """
+    experiments = db.query(models.Experiment).offset(skip).limit(limit).all()
+    return experiments
+
+@app.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
+def get_experiment(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves details of a specific experiment by its internal ID.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
+
+@app.get("/experiments/{experiment_id}/history", response_model=ExperimentHistoryResponse, response_model_exclude_none=True)
+def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
+    """
+    Returns time-series sensor data and AI predictions for a specific experiment, grouped by bucket.
+    """
+    experiment = db.query(models.Experiment).filter(models.Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    # Query with eager loading of prediction
+    readings = db.query(models.DailyReading)\
+        .filter(models.DailyReading.experiment_id == experiment_id)\
+        .order_by(models.DailyReading.timestamp.asc())\
+        .all()
+
+    # Group by bucket_label and extract NPK
+    # Note: All readings in this query belong to the same experiment, 
+    # and thus the same bucket_label from the Experiment table.
+    label = experiment.bucket_label or "unknown"
+    history_list = []
+    
+    for r in readings:
+        # Manually construct item to handle the nested prediction relationship
+        item = {
+            "timestamp": r.timestamp,
+            "ph": r.ph,
+            "ec": r.ec,
+            "water_temp": r.water_temp,
+            "image_url": f"/images/{os.path.basename(r.image_path)}" if r.image_path else None,
+            "n": r.prediction.predicted_n if r.prediction else None,
+            "p": r.prediction.predicted_p if r.prediction else None,
+            "k": r.prediction.predicted_k if r.prediction else None,
+        }
+        history_list.append(item)
+
+    return {
+        "id": experiment.id,
+        "experiment_id": experiment.experiment_id,
+        "history": {label: history_list}
+    }
 
 def generate_recommendation(n, p, k, ph, ec):
     """
@@ -238,7 +603,7 @@ def generate_recommendation(n, p, k, ph, ec):
     # Priority 4: Optimal
     return "Lettuce growth is optimal. No action required."
 
-# --- 3. VIDEO STREAMING PROXY ---
+@app.get("/video_feed/")
 @app.get("/video_feed")
 async def video_feed():
     """
@@ -261,7 +626,7 @@ async def video_feed():
                 ret, buffer = cv2.imencode('.jpg', frame)
                 if ret:
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                      b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
                 # Sleep briefly to avoid high CPU usage while waiting
                 time.sleep(1.0)
@@ -314,7 +679,7 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         "timestamp": latest.prediction_date,
         "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
         "recommendation": recommendation,
-        "image_url": reading.image_path.replace("\\", "/") if reading.image_url else None,
+        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
         "sensors": {
             "ph": reading.ph,
             "ec": reading.ec,
@@ -434,7 +799,7 @@ def list_readings(
     query = db.query(models.DailyReading)
 
     if bucket_label:
-        query = query.filter(models.DailyReading.bucket_label == bucket_label)
+        query = query.join(models.Experiment).filter(models.Experiment.bucket_label == bucket_label)
 
     # Get total count for pagination UI
     total_count = query.count()
@@ -450,6 +815,102 @@ def list_readings(
         "readings": readings
     }
 
+@app.get("/admin/images/", response_model=list[ImageInfo])
+def list_images(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of images from the images/ directory,
+    synced with database metadata from DailyReading.
+    """
+    image_dir = "images"
+    if not os.path.exists(image_dir):
+        return []
+
+    # 1. Get all image files from disk recursively
+    files = []
+    for root, _, filenames in os.walk(image_dir):
+        for f in filenames:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
+                # Store relative path from images/
+                rel_path = os.path.relpath(os.path.join(root, f), image_dir)
+                files.append(rel_path)
+    
+    # Sort by filename (which includes timestamp)
+    files.sort(reverse=True)
+
+    # Apply pagination to file list
+    paginated_files = files[skip : skip + limit]
+
+    # 2. Query DB for these specific files in a single batch
+    # We build a list of patterns for the LIKE query, or better, we look for matches
+    # since we have the filenames. 
+    # NOTE: In production with many files, we might want to store just the filename 
+    # in a separate indexed column.
+    
+    # Fetch all readings that match any of the paginated files
+    # We use a join with Experiment to get the bucket_label in one go
+    from sqlalchemy.orm import joinedload
+    
+    # Create a mapping of filename -> reading for quick lookup
+    readings_map = {}
+    
+    # We can optimize the search by looking for image_path that ends with the filename
+    # However, for a batch of 50, a simple loop with a slightly better query is okay,
+    # but let's try to get as many as possible in one or two queries.
+    
+    # To keep it simple and robust, we'll fetch all readings that might match
+    # and then filter in memory. This is still much faster than N queries.
+    if not paginated_files:
+        all_matching_readings = []
+    elif db.bind.dialect.name == "postgresql":
+        all_matching_readings = db.query(models.DailyReading)\
+            .options(joinedload(models.DailyReading.experiment))\
+            .filter(models.DailyReading.image_path.op('~')('|'.join(paginated_files)))\
+            .all()
+    else:
+        # Fallback for SQLite and others: Batch using multiple OR LIKE conditions
+        from sqlalchemy import or_
+        filters = [models.DailyReading.image_path.like(f"%{f}%") for f in paginated_files]
+        all_matching_readings = db.query(models.DailyReading)\
+            .options(joinedload(models.DailyReading.experiment))\
+            .filter(or_(*filters))\
+            .all()
+
+    for r in all_matching_readings:
+        for f in paginated_files:
+            if f in r.image_path:
+                readings_map[f] = r
+
+    results = []
+    for filename in paginated_files:
+        reading = readings_map.get(filename)
+        if reading:
+            results.append(ImageInfo(
+                filename=filename,
+                reading_id=reading.id,
+                timestamp=reading.timestamp,
+                image_url=f"/images/{filename}",
+                is_orphaned=False,
+                bucket_label=reading.experiment.bucket_label if reading.experiment else None
+            ))
+        else:
+            results.append(ImageInfo(
+                filename=filename,
+                image_url=f"/images/{filename}",
+                is_orphaned=True
+            ))
+
+    return results
+
 if __name__ == "__main__":
     import uvicorn
+    host_ip = get_host_ip()
+    print(f"\n🚀 LEAFCLOUD SERVER STARTING...")
+    print(f"🔗 Local Access: http://localhost:8000")
+    print(f"🔗 Network Access: http://{host_ip}:8000")
+    print(f"🎬 Video Feed: http://{host_ip}:8000/video_feed/\n")
+    
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

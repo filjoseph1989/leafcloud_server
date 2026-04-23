@@ -6,16 +6,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from database import get_db, Base
 import models
+from datetime import date
 from main import app
 from controllers.iot_controller import init_iot_controller
 
-# Use /tmp for test DB to avoid filesystem issues on external drives
-SQLALCHEMY_DATABASE_URL = "sqlite:////tmp/test_temp.db"
+# Use in-memory SQLite for testing with a single connection
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Use a single connection for the entire module to avoid locks
+connection = engine.connect()
+
 def override_get_db():
-    db = TestingSessionLocal()
+    db = TestingSessionLocal(bind=connection)
     try:
         yield db
     finally:
@@ -31,15 +35,22 @@ class MockVideoManager:
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_db():
-    # Remove old test DB if exists
-    if os.path.exists("/tmp/test_temp.db"):
-        os.remove("/tmp/test_temp.db")
-        
     # Use the local test engine to create tables
-    models.Base.metadata.create_all(bind=engine)
+    models.Base.metadata.create_all(bind=connection)
     if not os.path.exists("images"):
         os.makedirs("images")
     
+    # Create a default experiment so readings can be associated
+    db = TestingSessionLocal(bind=connection)
+    default_exp = models.Experiment(
+        experiment_id="EXP-TEST-DEFAULT",
+        bucket_label="default",
+        start_date=date(2026, 3, 8)
+    )
+    db.add(default_exp)
+    db.commit()
+    db.close()
+
     # Initialize controller with mocks
     init_iot_controller(
         model=None,
@@ -48,9 +59,7 @@ def setup_db():
     )
     
     yield
-    # Cleanup
-    if os.path.exists("/tmp/test_temp.db"):
-        os.remove("/tmp/test_temp.db")
+    connection.close()
 
 @pytest.fixture
 def client():

@@ -11,10 +11,10 @@ Base.metadata.create_all(bind=engine)
 
 def seed():
     db = SessionLocal()
-    
+
     # Ensure images directory exists
     os.makedirs("images", exist_ok=True)
-    
+
     # The 7 Experimental Conditions (Buckets) from Protocol
     buckets = [
         {"label": "BucketA-Balanced", "n_mult": 1.0, "p_mult": 1.0, "k_mult": 1.0},
@@ -39,7 +39,7 @@ def seed():
 
     for bucket in buckets:
         print(f"   Processing {bucket['label']}...")
-        
+
         # 1. Create Experiment Batch
         experiment = Experiment(
             bucket_label=bucket['label'],
@@ -52,7 +52,7 @@ def seed():
         # 2. Simulate 20 days of growth
         for day in range(1, 21):
             current_date = datetime.combine(start_date + timedelta(days=day), datetime.min.time())
-            
+
             # --- Determine if this is a Lab Day ---
             is_lab_day = day in [5, 10, 15]
             sample_label = f"{bucket['label']}-Day{day}" if is_lab_day else None
@@ -78,36 +78,35 @@ def seed():
             base_ec = 1.2
             ec_val = base_ec * ((bucket['n_mult'] + bucket['p_mult'] + bucket['k_mult']) / 3)
             ec_val = ec_val * random.uniform(0.9, 1.1) # Noise
-            
+
             image_filename = f"sim_{bucket['label']}_day{day:02d}.jpg"
             full_image_path = os.path.join("images", image_filename)
-            
+
             # Generate Physical Dummy Image (Green square with random noise)
             # 224x224 is standard for MobileNet
             dummy_img = np.zeros((224, 224, 3), dtype=np.uint8)
             # Set background to green-ish
-            dummy_img[:] = (34, 139, 34) 
+            dummy_img[:] = (34, 139, 34)
             # Add some noise to make file size realistic
             noise = np.random.randint(0, 50, (224, 224, 3), dtype=np.uint8)
             dummy_img = cv2.add(dummy_img, noise)
-            
+
             cv2.imwrite(full_image_path, dummy_img)
-            
+
             reading = DailyReading(
-                bucket_id=experiment.id,
+                experiment_id=experiment.id,
                 timestamp=current_date,
                 image_path=f"images/{image_filename}", # Relative path
                 ph=round(random.uniform(5.8, 6.2), 2),
                 ec=round(ec_val, 2),
-                water_temp=round(random.uniform(22.0, 26.0), 1),
-                sample_bottle_label=sample_label
+                water_temp=round(random.uniform(22.0, 26.0), 1)
             )
             db.add(reading)
             db.commit() # Commit reading to get ID
 
             # --- Create NPK Prediction (AI Output) ---
             # Simulate AI being somewhat accurate but not perfect
-            accuracy_factor = 0.85 if day < 7 else 0.95 
+            accuracy_factor = 0.85 if day < 7 else 0.95
 
             pred_n = n_actual * random.uniform(accuracy_factor, 2 - accuracy_factor)
             pred_p = p_actual * random.uniform(accuracy_factor, 2 - accuracy_factor)

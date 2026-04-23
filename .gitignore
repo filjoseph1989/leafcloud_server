@@ -16,6 +16,7 @@ __pycache__/
 
 # OS-specific files
 .DS_Store
+._*
 
 # Build and distribution artifacts
 build/
@@ -36,3 +37,10 @@ leafcloud-queries.dbcnb
 *.db
 .coverage
 *.log
+
+.docs/
+database-query.result
+images_b/
+images_c/
+leafcloud_backup_20260414_204522.sql
+leafcloud2_backup_20260418_173552.sql

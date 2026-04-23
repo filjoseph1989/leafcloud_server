@@ -89,14 +89,18 @@ pytest --cov=main --cov=models
 ### IOT Integration
 - `POST /iot/sensor_data/`: Receive JSON payloads (temp, ph, ec) from Raspberry Pi.
 - `POST /iot/upload_data/`: Upload images and form data for AI analysis.
-- `GET /video_feed`: MJPEG proxy for live camera feed.
+- `GET /video_feed/`: MJPEG proxy for live camera feed.
 
 ### Application API
 - `POST /login`: Admin authentication.
-- `GET /app/latest_status`: Get the most recent sensor readings and AI recommendations.
-- `GET /app/history`: Retrieve historical data for analytics.
+- `GET /app/latest_status/`: Get the most recent sensor readings and AI recommendations.
+- `GET /app/history/`: Retrieve historical data for analytics.
 
 ---
 
 ## 🧠 AI Features
 The server includes a MobileNetV2-based brain that classifies lettuce growth stages and provides recommendations. If the model file (`leafcloud_mobilenetv2_model.h5`) is missing, the server will fall back to dummy predictions for development.
+
+```sql
+pg_dump -U fil leafcloud2 > leafcloud2_backup_$(date +%Y%m%d_%H%M%S).sql
+```

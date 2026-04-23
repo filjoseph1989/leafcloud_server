@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Date, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -10,7 +10,8 @@ class Experiment(Base):
     __tablename__ = "experiments"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_label = Column(String(50))
+    experiment_id = Column(String(50), unique=True, index=True) # e.g. "EXP-001"
+    bucket_label = Column(String(50), nullable=True)
     start_date = Column(Date)
 
     # Relationship
@@ -24,18 +25,16 @@ class DailyReading(Base):
     __tablename__ = "daily_readings"
 
     id = Column(Integer, primary_key=True, index=True)
-    bucket_id = Column(Integer, ForeignKey("experiments.id"))
+    experiment_id = Column(Integer, ForeignKey("experiments.id"))
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     image_path = Column(String(255))
     ph = Column(Float)
+    ph_is_estimated = Column(Boolean, default=True, server_default=func.true())
+    needs_ph_update = Column(Boolean, default=True, server_default=func.true())
     ec = Column(Float)
     water_temp = Column(Float)
     status = Column(String(50), nullable=True, default="active")
-    bucket_label = Column(String(50), nullable=True)
-
-    # Links to Lab Results (if taken)
-    sample_bottle_label = Column(String(50), nullable=True)
 
     # Relationships
     experiment = relationship("Experiment", back_populates="readings")
@@ -73,3 +72,29 @@ class NPKPrediction(Base):
 
     # Relationship
     daily_reading = relationship("DailyReading", back_populates="prediction")
+
+class AutomatedActionLog(Base):
+    """
+    Audit Log: Tracks automated filesystem actions (e.g. moving images to trash).
+    """
+    __tablename__ = "automated_action_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255))
+    original_path = Column(String(255))
+    current_path = Column(String(255))
+    action_type = Column(String(50)) # e.g., "move_to_trash", "permanent_delete"
+    reason = Column(String(100))     # e.g., "low_greenness", "corrupted_size"
+    metric_value = Column(Float, nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+class ImageCropProgress(Base):
+    """
+    Tracks which raw images have been processed (cropped or skipped).
+    """
+    __tablename__ = "image_crop_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rel_path = Column(String(255), unique=True, index=True) # Normalized relative path
+    is_processed = Column(Boolean, default=True)
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

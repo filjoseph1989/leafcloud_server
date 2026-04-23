@@ -1,6 +1,6 @@
 from pydantic import ValidationError
 import pytest
-from main import SensorData
+from controllers.iot_controller import SensorData
 
 def test_sensor_data_valid():
     data = {
