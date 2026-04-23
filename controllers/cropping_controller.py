@@ -123,7 +123,27 @@ def submit_crop(request: CropRequest, db: Session = Depends(get_db)):
 
     cv2.imwrite(dest_path, crop)
     
-    return {"status": "success", "saved_path": dest_path}
+    # --- LINKING LOGIC ---
+    # Find the corresponding DailyReading record
+    # We look for a path that contains the rel_path. 
+    # Usually image_path is "images/YYYY-MM-DD/Type/File.jpg"
+    # request.rel_path is "YYYY-MM-DD/Type/File.jpg"
+    search_path = f"images/{request.rel_path}"
+    reading = db.query(models.DailyReading).filter(
+        (models.DailyReading.image_path == search_path) | 
+        (models.DailyReading.image_path == request.rel_path)
+    ).first()
+
+    if reading:
+        # Save the crop link
+        new_crop = models.ImageCrop(
+            daily_reading_id=reading.id,
+            crop_path=dest_path.replace("\\", "/") # Normalize for web/database
+        )
+        db.add(new_crop)
+        db.commit()
+    
+    return {"status": "success", "saved_path": dest_path, "linked_reading_id": reading.id if reading else None}
 
 @cropping_router.post("/skip")
 def skip_image(request: SkipRequest, db: Session = Depends(get_db)):

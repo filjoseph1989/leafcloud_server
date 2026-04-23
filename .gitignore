@@ -39,8 +39,9 @@ leafcloud-queries.dbcnb
 *.log
 
 .docs/
-database-query.result
-images_b/
-images_c/
-leafcloud_backup_20260414_204522.sql
-leafcloud2_backup_20260418_173552.sql
+.images_b/
+.images_c/
+
+.leafcloud-queries.dbcnb
+.leafcloud_backup_20260414_204522.sql
+leafcloud2_backup_20260422_221102.sql
