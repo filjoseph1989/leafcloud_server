@@ -87,6 +87,7 @@ class AutomatedActionLog(Base):
     action_type = Column(String(50)) # e.g., "move_to_trash", "permanent_delete"
     reason = Column(String(100))     # e.g., "low_greenness", "corrupted_size"
     metric_value = Column(Float, nullable=True)
+    is_viewed = Column(Boolean, default=False, server_default=func.false())
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 class ImageCropProgress(Base):
