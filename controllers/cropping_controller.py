@@ -1,8 +1,10 @@
 import os
 import cv2
 import uuid
+from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List
 from schemas.cropping import CropRequest, SkipRequest, CropNextResponse
 from database import get_db
@@ -29,43 +31,61 @@ def get_sorted_images() -> List[str]:
     all_files.sort()
     return all_files
 
-def get_last_processed(db: Session):
-    last = db.query(models.ImageCropProgress).order_by(models.ImageCropProgress.last_updated.desc()).first()
-    return last.rel_path if last else None
+def get_unavailable_images(db: Session) -> List[str]:
+    """Returns a list of image paths that are either processed or currently locked."""
+    now = datetime.now()
+    unavailable = db.query(models.ImageCropProgress.rel_path).filter(
+        or_(
+            models.ImageCropProgress.is_processed == True,
+            models.ImageCropProgress.locked_until > now
+        )
+    ).all()
+    return [u.rel_path for u in unavailable]
+
+def lock_image(rel_path: str, db: Session, minutes: int = 5):
+    """Locks an image for a specific duration to prevent concurrent access."""
+    now = datetime.now()
+    until = now + timedelta(minutes=minutes)
+    
+    progress = db.query(models.ImageCropProgress).filter(models.ImageCropProgress.rel_path == rel_path).first()
+    if not progress:
+        progress = models.ImageCropProgress(rel_path=rel_path, is_processed=False, locked_until=until)
+        db.add(progress)
+    else:
+        progress.locked_until = until
+    db.commit()
 
 def save_progress(rel_path: str, db: Session):
     progress = db.query(models.ImageCropProgress).filter(models.ImageCropProgress.rel_path == rel_path).first()
     if not progress:
-        progress = models.ImageCropProgress(rel_path=rel_path, is_processed=True)
+        progress = models.ImageCropProgress(rel_path=rel_path, is_processed=True, locked_until=None)
         db.add(progress)
     else:
         progress.is_processed = True
-        # last_updated will be updated by onupdate trigger
+        progress.locked_until = None
     db.commit()
 
 @cropping_router.get("/next", response_model=CropNextResponse)
 def get_next_crop_image(db: Session = Depends(get_db)):
-    """Returns the next image that needs to be cropped."""
+    """Returns the next image that needs to be cropped and locks it for 5 minutes."""
     images = get_sorted_images()
-    last_processed = get_last_processed(db)
-    
     if not images:
         raise HTTPException(status_code=404, detail="No images found in source directory.")
 
-    # Find the next image after the last processed one
+    unavailable = get_unavailable_images(db)
+    
+    # Find the first image that is not unavailable
     next_image = None
-    if not last_processed:
-        next_image = images[0]
-    else:
-        try:
-            current_index = images.index(last_processed)
-            if current_index + 1 < len(images):
-                next_image = images[current_index + 1]
-            else:
-                raise HTTPException(status_code=404, detail="All images have been processed.")
-        except ValueError:
-            # If last_processed is no longer in the list, start from beginning
-            next_image = images[0]
+    for img in images:
+        if img not in unavailable:
+            next_image = img
+            break
+
+    if not next_image:
+        raise HTTPException(status_code=404, detail="All images have been processed or are currently locked.")
+
+    # Lock it for 5 minutes
+    lock_image(next_image, db, minutes=5)
 
     return {
         "rel_path": next_image,
@@ -142,6 +162,9 @@ def submit_crop(request: CropRequest, db: Session = Depends(get_db)):
         )
         db.add(new_crop)
         db.commit()
+    
+    # Mark the original image as processed so the progress moves forward
+    save_progress(request.rel_path, db)
     
     return {"status": "success", "saved_path": dest_path, "linked_reading_id": reading.id if reading else None}
 

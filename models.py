@@ -87,6 +87,7 @@ class AutomatedActionLog(Base):
     action_type = Column(String(50)) # e.g., "move_to_trash", "permanent_delete"
     reason = Column(String(100))     # e.g., "low_greenness", "corrupted_size"
     metric_value = Column(Float, nullable=True)
+    is_viewed = Column(Boolean, default=False, server_default=func.false())
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
 class ImageCropProgress(Base):
@@ -98,6 +99,7 @@ class ImageCropProgress(Base):
     id = Column(Integer, primary_key=True, index=True)
     rel_path = Column(String(255), unique=True, index=True) # Normalized relative path
     is_processed = Column(Boolean, default=True)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class ImageCrop(Base):

@@ -53,6 +53,7 @@ import models
 from controllers.iot_controller import iot_router, init_iot_controller, resolve_experiment
 from controllers.images_controller import images_router
 from controllers.cropping_controller import cropping_router
+from controllers.trash_controller import trash_router
 from schemas.images import (
     BucketLabel, ActiveBucketRequest, ExperimentCreate, ExperimentResponse,
     ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, ImageInfo,
@@ -223,10 +224,16 @@ def read_root():
 app.include_router(iot_router)
 app.include_router(images_router)
 app.include_router(cropping_router)
+app.include_router(trash_router)
 
 # Serve static images for the app
 os.makedirs("images", exist_ok=True)
 app.mount("/images", StaticFiles(directory="images"), name="images")
+
+# Serve trash images for review
+trash_dir = "cropped_dataset/temp_trash"
+os.makedirs(trash_dir, exist_ok=True)
+app.mount("/temp_trash", StaticFiles(directory=trash_dir), name="temp_trash")
 
 # --- Lifecycle Events ---
 @app.on_event("startup")
