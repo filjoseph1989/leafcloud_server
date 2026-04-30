@@ -11,21 +11,22 @@ def is_macos_metadata(filename: str) -> bool:
 
 def delete_macos_metadata(directory: str) -> int:
     """
-    Finds and deletes macOS metadata files (._*) in the specified directory.
+    Finds and deletes macOS metadata files (._*) in the specified directory and subdirectories.
     Returns the count of deleted files.
     """
     deleted_count = 0
     if not os.path.exists(directory):
         return 0
         
-    for filename in os.listdir(directory):
-        if is_macos_metadata(filename):
-            file_path = os.path.join(directory, filename)
-            try:
-                os.remove(file_path)
-                deleted_count += 1
-            except OSError:
-                pass
+    for root, dirs, files in os.walk(directory):
+        for filename in files:
+            if is_macos_metadata(filename):
+                file_path = os.path.join(root, filename)
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except OSError:
+                    pass
     return deleted_count
 
 def is_corrupted_file(file_path: str, threshold: int) -> bool:

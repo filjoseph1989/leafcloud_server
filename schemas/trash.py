@@ -17,5 +17,5 @@ class TrashedCropResponse(BaseModel):
 
 class TrashScanResponse(BaseModel):
     image: Optional[TrashedCropResponse] = None
-    remaining_count: int
+    total_count: int
     current_index: int

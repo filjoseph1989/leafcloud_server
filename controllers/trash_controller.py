@@ -1,7 +1,7 @@
 import os
 import shutil
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import asc, desc, func
 
@@ -9,13 +9,14 @@ from database import get_db
 import models
 from schemas.trash import TrashScanResponse, TrashedCropResponse
 
-trash_router = APIRouter(prefix="/trash", tags=["Trash Review"])
+trash_router = APIRouter(prefix="/api/v1/trash", tags=["Trash Review"])
 
 # Note: We assume temp_trash is mounted as /temp_trash static file route in main.py
 TRASH_URL_PREFIX = "/temp_trash"
 
 @trash_router.get("/scan", response_model=TrashScanResponse)
 def scan_trash(
+    request: Request,
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db)
 ):
@@ -23,6 +24,7 @@ def scan_trash(
     Returns an image from the trash for review.
     Uses offset to allow 'sliding' back and forth.
     """
+    base_url = str(request.base_url).rstrip("/")
     query = db.query(models.AutomatedActionLog).filter(
         models.AutomatedActionLog.reason == "low_greenness_crop",
         models.AutomatedActionLog.action_type == "move_to_trash"
@@ -32,28 +34,30 @@ def scan_trash(
     log = query.offset(offset).first()
     
     if not log:
-        return TrashScanResponse(image=None, remaining_count=total_count, current_index=offset)
+        return TrashScanResponse(image=None, total_count=total_count, current_index=offset)
 
     return TrashScanResponse(
-        image=TrashedCropResponse.from_orm(log) if hasattr(TrashedCropResponse, "from_orm") else TrashedCropResponse(
+        image=TrashedCropResponse(
             id=log.id,
             filename=log.filename,
-            image_url=f"{TRASH_URL_PREFIX}/{os.path.basename(log.current_path)}",
+            image_url=f"{base_url}{TRASH_URL_PREFIX}/{os.path.basename(log.current_path)}",
             metric_value=log.metric_value or 0.0,
             timestamp=log.timestamp,
             is_viewed=log.is_viewed,
             action_type=log.action_type
         ),
-        remaining_count=total_count,
+        total_count=total_count,
         current_index=offset
     )
 
 @trash_router.get("/next", response_model=TrashScanResponse)
-def get_next_unviewed(db: Session = Depends(get_db)):
+def get_next_unviewed(request: Request, db: Session = Depends(get_db)):
     """
     Finds the first image that hasn't been viewed yet and returns it with its index.
     This allows the app to 'resume' where it left off.
     """
+    base_url = str(request.base_url).rstrip("/")
+    
     # 1. Find all relevant IDs in order
     all_ids = db.query(models.AutomatedActionLog.id).filter(
         models.AutomatedActionLog.reason == "low_greenness_crop",
@@ -70,7 +74,7 @@ def get_next_unviewed(db: Session = Depends(get_db)):
     ).order_by(asc(models.AutomatedActionLog.id)).first()
     
     if not next_log:
-        return TrashScanResponse(image=None, remaining_count=len(id_list), current_index=0)
+        return TrashScanResponse(image=None, total_count=len(id_list), current_index=0)
     
     # 3. Calculate the index (offset) of this ID
     try:
@@ -82,13 +86,13 @@ def get_next_unviewed(db: Session = Depends(get_db)):
         image=TrashedCropResponse(
             id=next_log.id,
             filename=next_log.filename,
-            image_url=f"{TRASH_URL_PREFIX}/{os.path.basename(next_log.current_path)}",
+            image_url=f"{base_url}{TRASH_URL_PREFIX}/{os.path.basename(next_log.current_path)}",
             metric_value=next_log.metric_value or 0.0,
             timestamp=next_log.timestamp,
             is_viewed=next_log.is_viewed,
             action_type=next_log.action_type
         ),
-        remaining_count=len(id_list),
+        total_count=len(id_list),
         current_index=current_index
     )
 
