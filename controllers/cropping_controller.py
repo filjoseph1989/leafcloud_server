@@ -31,15 +31,24 @@ def get_sorted_images() -> List[str]:
     all_files.sort()
     return all_files
 
-def get_unavailable_images(db: Session) -> List[str]:
+def get_unavailable_images(db: Session, include_additional: bool = False) -> List[str]:
     """Returns a list of image paths that are either processed or currently locked."""
     now = datetime.now()
-    unavailable = db.query(models.ImageCropProgress.rel_path).filter(
-        or_(
-            models.ImageCropProgress.is_processed == True,
-            models.ImageCropProgress.locked_until > now
-        )
-    ).all()
+    if include_additional:
+        # If we care about additional, then an image is only "unavailable" if it has BOTH processed and additional_processed
+        unavailable = db.query(models.ImageCropProgress.rel_path).filter(
+            or_(
+                (models.ImageCropProgress.is_processed == True) & (models.ImageCropProgress.additional_processed == True),
+                models.ImageCropProgress.locked_until > now
+            )
+        ).all()
+    else:
+        unavailable = db.query(models.ImageCropProgress.rel_path).filter(
+            or_(
+                models.ImageCropProgress.is_processed == True,
+                models.ImageCropProgress.locked_until > now
+            )
+        ).all()
     return [u.rel_path for u in unavailable]
 
 def lock_image(rel_path: str, db: Session, minutes: int = 5):
@@ -55,13 +64,15 @@ def lock_image(rel_path: str, db: Session, minutes: int = 5):
         progress.locked_until = until
     db.commit()
 
-def save_progress(rel_path: str, db: Session):
+def save_progress(rel_path: str, db: Session, additional: bool = False):
     progress = db.query(models.ImageCropProgress).filter(models.ImageCropProgress.rel_path == rel_path).first()
     if not progress:
-        progress = models.ImageCropProgress(rel_path=rel_path, is_processed=True, locked_until=None)
+        progress = models.ImageCropProgress(rel_path=rel_path, is_processed=True, additional_processed=additional, locked_until=None)
         db.add(progress)
     else:
         progress.is_processed = True
+        if additional:
+            progress.additional_processed = True
         progress.locked_until = None
     db.commit()
 
@@ -167,6 +178,70 @@ def submit_crop(request: CropRequest, db: Session = Depends(get_db)):
     save_progress(request.rel_path, db)
     
     return {"status": "success", "saved_path": dest_path, "linked_reading_id": reading.id if reading else None}
+
+@cropping_router.post("/auto-grid")
+def auto_grid_crop(request: SkipRequest, db: Session = Depends(get_db)):
+    """
+    Automatically divides an image into a grid of 224x224 squares.
+    This is much faster than manual cropping for large datasets.
+    """
+    abs_source_path = os.path.join(SOURCE_DIR, request.rel_path)
+    if not os.path.exists(abs_source_path):
+        raise HTTPException(status_code=404, detail="Original image not found.")
+
+    img = cv2.imread(abs_source_path)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Failed to load image.")
+
+    h, w = img.shape[:2]
+    
+    # Calculate grid steps
+    # We use a slight overlap if needed, but for now, simple tiling
+    stride = CROP_SIZE
+    
+    crops_saved = 0
+    dest_folder = os.path.join(OUTPUT_DIR, os.path.dirname(request.rel_path))
+    os.makedirs(dest_folder, exist_ok=True)
+    
+    base_name = os.path.splitext(os.path.basename(request.rel_path))[0]
+    
+    # Find DailyReading
+    search_path = f"images/{request.rel_path}"
+    reading = db.query(models.DailyReading).filter(
+        (models.DailyReading.image_path == search_path) | 
+        (models.DailyReading.image_path == request.rel_path)
+    ).first()
+
+    # Iterate through the grid
+    for y in range(0, h - CROP_SIZE + 1, stride):
+        for x in range(0, w - CROP_SIZE + 1, stride):
+            crop = img[y:y + CROP_SIZE, x:x + CROP_SIZE]
+            
+            unique_id = uuid.uuid4().hex[:6]
+            dest_filename = f"{base_name}_grid_{y}_{x}_{unique_id}.jpg"
+            dest_path = os.path.join(dest_folder, dest_filename)
+            
+            cv2.imwrite(dest_path, crop)
+            crops_saved += 1
+            
+            if reading:
+                new_crop = models.ImageCrop(
+                    daily_reading_id=reading.id,
+                    crop_path=dest_path.replace("\\", "/")
+                )
+                db.add(new_crop)
+
+    if reading:
+        db.commit()
+    
+    # Mark as processed
+    save_progress(request.rel_path, db)
+    
+    return {
+        "status": "success", 
+        "crops_created": crops_saved, 
+        "message": f"Automatically created {crops_saved} grid crops for {request.rel_path}"
+    }
 
 @cropping_router.post("/skip")
 def skip_image(request: SkipRequest, db: Session = Depends(get_db)):

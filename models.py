@@ -99,6 +99,7 @@ class ImageCropProgress(Base):
     id = Column(Integer, primary_key=True, index=True)
     rel_path = Column(String(255), unique=True, index=True) # Normalized relative path
     is_processed = Column(Boolean, default=True)
+    additional_processed = Column(Boolean, default=False, server_default=func.false())
     locked_until = Column(DateTime(timezone=True), nullable=True)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -111,6 +112,7 @@ class ImageCrop(Base):
     id = Column(Integer, primary_key=True, index=True)
     daily_reading_id = Column(Integer, ForeignKey("daily_readings.id"))
     crop_path = Column(String(255))
+    crop_type = Column(String(50), default="grid", server_default="grid")
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationship

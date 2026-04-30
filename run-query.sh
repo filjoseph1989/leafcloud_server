@@ -1,4 +1,4 @@
-#!/bin/bash
+    #!/bin/bash
 
 # Load environment variables from .env if present
 if [ -f .env ]; then
@@ -33,4 +33,4 @@ else
 fi
 
 echo "Query results saved to database-query.result"
-codium database-query.result
+code database-query.result

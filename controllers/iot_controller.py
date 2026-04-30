@@ -373,12 +373,29 @@ async def upload_from_iot(
             img = Image.open(file_path).convert('RGB').resize((224, 224))
             img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
             prediction = AI_MODEL.predict(img_array)
-            predicted_n, predicted_p, predicted_k = prediction[0]
+            
+            # Prediction is [npk_ml_l, micro_ml_l]
+            npk_ml_l, micro_ml_l = prediction[0]
+            
+            # Precise Mapping based on user ratios:
+            # NPK Solution (8-15-15) -> 1ml/L = 80ppm N, 150ppm P, 150ppm K
+            # Micro Solution (8-15-36) -> 1ml/L = 80ppm N, 150ppm P, 360ppm K
+            # Since you use 2ml/L, a prediction of 2.0 will correctly result in 
+            # 160ppm N (80 * 2) for the individual buckets.
+            predicted_n = (npk_ml_l * 80.0) + (micro_ml_l * 80.0)
+            predicted_p = (npk_ml_l * 150.0) + (micro_ml_l * 150.0)
+            predicted_k = (npk_ml_l * 150.0) + (micro_ml_l * 360.0)
+            
+            # Ensure no negative values due to noise
+            predicted_n = max(0.0, predicted_n)
+            predicted_p = max(0.0, predicted_p)
+            predicted_k = max(0.0, predicted_k)
+            
         except Exception as e:
             print(f"Prediction Error: {e}")
     else:
         # Dummy fallback
-        predicted_n, predicted_p, predicted_k = 150.0, 50.0, 200.0
+        predicted_n, predicted_p, predicted_k = 100.0, 40.0, 160.0
 
     # E. Save Prediction
     pred_record = models.NPKPrediction(

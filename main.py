@@ -184,13 +184,14 @@ class VideoManager:
 
 video_manager = VideoManager()
 
-# Load AI Brain (Mock loader for now if file doesn't exist)
+# Load AI Brain (New Regression Model)
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 try:
     import tensorflow as tf
-    model = tf.keras.models.load_model("leafcloud_mobilenetv2_model.h5")
-    print("🧠 AI Model loaded successfully.")
+    # Load the new regression model
+    model = tf.keras.models.load_model("leafcloud_regression_model.keras")
+    print("🧠 AI Regression Model (NPK/Micro) loaded successfully.")
 except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")
     model = None
@@ -578,37 +579,28 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
 def generate_recommendation(n, p, k, ph, ec):
     """
     Rule-based engine to convert sensor/AI data into actionable advice.
-
-    Args:
-        n: Nitrogen level.
-        p: Phosphorus level.
-        k: Potassium level.
-        ph: pH value.
-        ec: EC value.
-
-    Returns:
-        A string containing the recommendation.
     """
     # Priority 1: pH Lockout (Critical)
     if ph < 5.5 or ph > 7.0:
-        return "pH is out of range. Adjust to 5.8-6.5 immediately. Do not add fertilizer yet."
+        return f"pH is {ph:.2f} (Out of Range). Adjust to 5.8-6.5 immediately to prevent nutrient lockout."
 
-    # Priority 2: Nutrient Deficiency (Based on AI NPK)
-    if n < 100:
-        return "Nitrogen levels low. Add Calcium Nitrate to reservoir."
-    if p < 30:
-        return "Phosphorus levels low. Add Monopotassium Phosphate (MKP)."
-    if k < 150:
-        return "Potassium levels low. Add Potassium Sulfate."
+    # Priority 2: General Solution Strength (EC)
+    if ec < 0.6:
+        return "Nutrient solution is too diluted (EC < 0.6). Add balanced fertilizer."
+    if ec > 2.8:
+        return "Nutrient burn risk (EC > 2.8). Dilute with fresh water immediately."
 
-    # Priority 3: General EC Warning
-    if ec < 0.8: # Assuming EC is in mS/cm (800 µS/cm)
-        return "Solution is too weak. Add balanced nutrient mix."
-    if ec > 2.5: # 2500 µS/cm
-        return "Nutrient burn risk. Add fresh water to dilute."
+    # Priority 3: Specific Nutrient Deficiencies (Calculated from Regression Model)
+    # Thresholds set at ~50% of 2ml/L target (Target N: 160-320, P: 300-600, K: 300-1020)
+    if n < 150:
+        return f"Nitrogen level is low ({n:.1f} ppm). Supplement with Nitrogen source."
+    if p < 250:
+        return f"Phosphorus deficiency suspected ({p:.1f} ppm). Adjust nutrient balance."
+    if k < 400:
+        return f"Potassium level is below optimal ({k:.1f} ppm). Monitor for leaf yellowing."
 
     # Priority 4: Optimal
-    return "Lettuce growth is optimal. No action required."
+    return "Plant health is optimal. Nutrient concentrations are within the target range for the current growth stage."
 
 @app.get("/video_feed/")
 @app.get("/video_feed")
