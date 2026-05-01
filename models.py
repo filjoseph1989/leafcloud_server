@@ -41,20 +41,6 @@ class DailyReading(Base):
     prediction = relationship("NPKPrediction", back_populates="daily_reading", uselist=False)
     crops = relationship("ImageCrop", back_populates="daily_reading")
 
-class LabResult(Base):
-    """
-    Answer Key: The 'Ground Truth' from the Lab.
-    Linked to the physical Bottle Label.
-    """
-    __tablename__ = "lab_results"
-
-    id = Column(Integer, primary_key=True, index=True)
-    sample_bottle_label = Column(String(50), unique=True, index=True) # e.g. "BucketA-Day5"
-
-    n_val = Column(Float)
-    p_val = Column(Float)
-    k_val = Column(Float)
-
 class NPKPrediction(Base):
     """
     AI Result: Stores the NPK values calculated by the CNN.

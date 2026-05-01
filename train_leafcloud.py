@@ -54,9 +54,9 @@ def get_dataset():
     """
     df_daily = pd.read_sql(query_daily, engine)
 
-    # B. Fetch Lab Results (The "Answers")
-    query_lab = "SELECT sample_bottle_label, n_val, p_val, k_val FROM lab_results"
-    df_lab = pd.read_sql(query_lab, engine)
+    # B. Fetch Lab Results (The "Answers") - Table dropped
+    # query_lab = "SELECT sample_bottle_label, n_val, p_val, k_val FROM lab_results"
+    # df_lab = pd.read_sql(query_lab, engine)
 
     # C. Merge Tables
     # NOTE: sample_bottle_label was removed from daily_readings as redundant.

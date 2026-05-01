@@ -51,7 +51,7 @@ def setup_test_env(db_session):
 def test_list_images_endpoint(client, setup_test_env):
     """Verify that images are listed and correctly identified as synced or orphaned."""
     # Use a high limit to ensure our test files are found among other images in the dir
-    response = client.get("/admin/images/?limit=1000")
+    response = client.get("/api/v1/images/?limit=1000")
     assert response.status_code == 200
     data = response.json()
     

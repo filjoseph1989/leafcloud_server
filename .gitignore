@@ -43,10 +43,15 @@ leafcloud-queries.dbcnb
 .images_c/
 
 .cropped_dataset_b/
-database-query.result
-leafcloud2_backup_20260429_024146.sql
-leafcloud_regression_model.keras
-leafcloud_regression_model_20260429_2254.keras
+cropped_dataset/
+
 .leafcloud-queries.dbcnb
 .leafcloud_backup_20260414_204522.sql
-cropped_dataset/
+
+database-query.result
+
+leafcloud_regression_model.keras
+leafcloud_regression_model_20260429_2254.keras
+
+leafcloud2_backup_20260501_011709.sql
+leafcloud2_backup_20260501_163851.sql
