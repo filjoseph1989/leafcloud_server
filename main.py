@@ -440,7 +440,7 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
     global active_bucket_id, active_experiment_id
 
     # Log request to file for easier debugging
-    with open("control_requests.log", "a") as f:
+    with open("logs/control_requests.log", "a") as f:
         f.write(f"{datetime.now()} - Received active bucket request: {request.bucket_id}\n")
 
     if request.bucket_id == BucketLabel.STOP:
@@ -808,101 +808,7 @@ def list_readings(
                     .limit(limit)\
                     .all()
 
-    return {
-        "total": total_count,
-        "page_size": len(readings),
-        "readings": readings
-    }
-
-@app.get("/admin/images/", response_model=list[ImageInfo])
-def list_images(
-    skip: int = 0,
-    limit: int = 50,
-    db: Session = Depends(get_db)
-):
-    """
-    Returns a list of images from the images/ directory,
-    synced with database metadata from DailyReading.
-    """
-    image_dir = "images"
-    if not os.path.exists(image_dir):
-        return []
-
-    # 1. Get all image files from disk recursively
-    files = []
-    for root, _, filenames in os.walk(image_dir):
-        for f in filenames:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
-                # Store relative path from images/
-                rel_path = os.path.relpath(os.path.join(root, f), image_dir)
-                files.append(rel_path)
-    
-    # Sort by filename (which includes timestamp)
-    files.sort(reverse=True)
-
-    # Apply pagination to file list
-    paginated_files = files[skip : skip + limit]
-
-    # 2. Query DB for these specific files in a single batch
-    # We build a list of patterns for the LIKE query, or better, we look for matches
-    # since we have the filenames. 
-    # NOTE: In production with many files, we might want to store just the filename 
-    # in a separate indexed column.
-    
-    # Fetch all readings that match any of the paginated files
-    # We use a join with Experiment to get the bucket_label in one go
-    from sqlalchemy.orm import joinedload
-    
-    # Create a mapping of filename -> reading for quick lookup
-    readings_map = {}
-    
-    # We can optimize the search by looking for image_path that ends with the filename
-    # However, for a batch of 50, a simple loop with a slightly better query is okay,
-    # but let's try to get as many as possible in one or two queries.
-    
-    # To keep it simple and robust, we'll fetch all readings that might match
-    # and then filter in memory. This is still much faster than N queries.
-    if not paginated_files:
-        all_matching_readings = []
-    elif db.bind.dialect.name == "postgresql":
-        all_matching_readings = db.query(models.DailyReading)\
-            .options(joinedload(models.DailyReading.experiment))\
-            .filter(models.DailyReading.image_path.op('~')('|'.join(paginated_files)))\
-            .all()
-    else:
-        # Fallback for SQLite and others: Batch using multiple OR LIKE conditions
-        from sqlalchemy import or_
-        filters = [models.DailyReading.image_path.like(f"%{f}%") for f in paginated_files]
-        all_matching_readings = db.query(models.DailyReading)\
-            .options(joinedload(models.DailyReading.experiment))\
-            .filter(or_(*filters))\
-            .all()
-
-    for r in all_matching_readings:
-        for f in paginated_files:
-            if f in r.image_path:
-                readings_map[f] = r
-
-    results = []
-    for filename in paginated_files:
-        reading = readings_map.get(filename)
-        if reading:
-            results.append(ImageInfo(
-                filename=filename,
-                reading_id=reading.id,
-                timestamp=reading.timestamp,
-                image_url=f"/images/{filename}",
-                is_orphaned=False,
-                bucket_label=reading.experiment.bucket_label if reading.experiment else None
-            ))
-        else:
-            results.append(ImageInfo(
-                filename=filename,
-                image_url=f"/images/{filename}",
-                is_orphaned=True
-            ))
-
-    return results
+    return readings
 
 if __name__ == "__main__":
     import uvicorn

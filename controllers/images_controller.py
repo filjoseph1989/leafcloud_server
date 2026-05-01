@@ -3,16 +3,89 @@ import shutil
 import anyio
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Header
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_
 from typing import Optional
 
 from database import get_db
 import models
 import image_filtering
-from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse
+from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse, ImageInfo
 
 # Router for image administrative actions
 images_router = APIRouter(prefix="/api/v1/images", tags=["Images Admin"])
+
+@images_router.get("/", response_model=list[ImageInfo])
+def list_images(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of images from the images/ directory,
+    synced with database metadata from DailyReading.
+    """
+    image_dir = "images"
+    if not os.path.exists(image_dir):
+        return []
+
+    # 1. Get all image files from disk recursively
+    files = []
+    for root, _, filenames in os.walk(image_dir):
+        for f in filenames:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
+                # Store relative path from images/
+                rel_path = os.path.relpath(os.path.join(root, f), image_dir)
+                files.append(rel_path)
+    
+    # Sort by filename (which includes timestamp)
+    files.sort(reverse=True)
+
+    # Apply pagination to file list
+    paginated_files = files[skip : skip + limit]
+
+    # 2. Query DB for these specific files
+    readings_map = {}
+    
+    if paginated_files:
+        # Optimization: SQLite has a limit on expression depth (OR/IN clauses)
+        # We chunk the files to avoid "Expression tree is too large" error
+        CHUNK_SIZE = 100
+        all_matching_readings = []
+        for i in range(0, len(paginated_files), CHUNK_SIZE):
+            chunk = paginated_files[i:i + CHUNK_SIZE]
+            filters = [models.DailyReading.image_path.like(f"%{f}%") for f in chunk]
+            chunk_readings = db.query(models.DailyReading)\
+                .options(joinedload(models.DailyReading.experiment))\
+                .filter(or_(*filters))\
+                .all()
+            all_matching_readings.extend(chunk_readings)
+
+        for r in all_matching_readings:
+            for f in paginated_files:
+                if f in r.image_path:
+                    readings_map[f] = r
+
+    results = []
+    for filename in paginated_files:
+        reading = readings_map.get(filename)
+        if reading:
+            results.append(ImageInfo(
+                filename=filename,
+                reading_id=reading.id,
+                timestamp=reading.timestamp,
+                image_url=f"/images/{filename}",
+                is_orphaned=False,
+                bucket_label=reading.experiment.bucket_label if reading.experiment else None
+            ))
+        else:
+            results.append(ImageInfo(
+                filename=filename,
+                image_url=f"/images/{filename}",
+                is_orphaned=True
+            ))
+
+    return results
 
 @images_router.get("/trash", response_model=list[TrashItemResponse])
 def get_trashed_images(
