@@ -2,7 +2,7 @@ import os
 import shutil
 import anyio
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from typing import Optional
@@ -226,17 +226,22 @@ async def restore_images(
         print(f"❌ RESTORE ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
 
+@images_router.delete("/")
 @images_router.delete("/{filename:path}")
 def delete_image(
-    filename: str,
+    filename: Optional[str] = None,
+    log_id: Optional[int] = Query(None, alias="id"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
     """
-    Moves an image to temp_trash and marks its DB record as deleted.
+    Handles image deletion. 
+    - If 'id' is provided: Performs a PERMANENT deletion of a trashed item.
+    - If 'filename' is provided: Moves an active image to temp_trash.
 
     Args:
-        filename (str): The filename or path of the image to delete.
+        filename (str, optional): The filename or path of the image to move to trash.
+        log_id (int, optional): The ID of a log entry to permanently delete.
         authorization (str): Auth token.
         db (Session): Database session.
 
@@ -247,10 +252,39 @@ def delete_image(
     if authorization != "demo-access-token-xyz-789":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # 2. Cleanup filename (handle optional 'images/' prefix from URL)
+    # --- Case A: Permanent Deletion by Log ID ---
+    if log_id is not None:
+        log = db.query(models.AutomatedActionLog).filter(models.AutomatedActionLog.id == log_id).first()
+        if not log:
+            raise HTTPException(status_code=404, detail=f"Trash log entry with ID {log_id} not found")
+
+        # Get absolute paths to ensure correctness
+        base_dir = os.getcwd()
+        file_to_delete = os.path.join(base_dir, log.current_path)
+
+        # Attempt to delete file if it exists
+        if os.path.exists(file_to_delete):
+            try:
+                os.remove(file_to_delete)
+                print(f"🔥 Permanently deleted file: {file_to_delete}")
+            except Exception as e:
+                print(f"⚠️ Error deleting file {file_to_delete}: {e}")
+        else:
+            print(f"ℹ️ File {file_to_delete} already missing from disk, cleaning up DB record.")
+
+        # Always delete the database log record
+        db.delete(log)
+        db.commit()
+        return {"status": "success", "message": f"Permanently deleted trash record {log_id}"}
+
+    # --- Case B: Move to Trash by Filename ---
+    if not filename:
+        raise HTTPException(status_code=400, detail="Either 'id' or 'filename' must be provided")
+
+    # Cleanup filename (handle optional 'images/' prefix from URL)
     clean_filename = filename.lstrip("/").replace("images/", "")
 
-    # 3. Path Traversal Protection & Existence Check
+    # Path Traversal Protection & Existence Check
     image_dir = "images"
     trash_dir = os.path.join(image_dir, "temp_trash")
 
@@ -264,14 +298,14 @@ def delete_image(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
 
-    # 4. Database Soft Cleanup (if record exists)
+    # Database Soft Cleanup (if DailyReading record exists)
     reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{clean_filename}")).first()
 
     if reading:
         reading.status = "deleted"
         print(f"♻️ Marked DB record as deleted for reading ID: {reading.id}")
 
-    # 5. Filesystem Move to Trash
+    # Filesystem Move to Trash
     try:
         unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
         dest_path = os.path.join(trash_dir, unique_filename)
