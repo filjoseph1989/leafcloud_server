@@ -33,4 +33,3 @@ else
 fi
 
 echo "Query results saved to database-query.result"
-code database-query.result

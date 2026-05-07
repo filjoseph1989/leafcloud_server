@@ -10,7 +10,7 @@ from typing import Optional
 from database import get_db
 import models
 import image_filtering
-from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse, ImageInfo
+from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse, ImageInfo, CroppedImageInfo
 
 import logging
 from datetime import datetime
@@ -99,6 +99,66 @@ def list_images(
             results.append(ImageInfo(
                 filename=filename,
                 image_url=f"/images/{filename}",
+                is_orphaned=True
+            ))
+
+    return results
+
+@images_router.get("/cropped", response_model=list[CroppedImageInfo])
+def list_cropped_images(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of images from the cropped_dataset/ directory,
+    joined with ImageCrop DB records where available.
+    """
+    crop_dir = "cropped_dataset"
+    if not os.path.exists(crop_dir):
+        return []
+
+    files = []
+    for root, _, filenames in os.walk(crop_dir):
+        if "temp_trash" in root:
+            continue
+        for f in filenames:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and not f.startswith('._'):
+                rel_path = os.path.relpath(os.path.join(root, f), crop_dir)
+                files.append(rel_path)
+
+    files.sort(reverse=True)
+    paginated = files[skip: skip + limit]
+
+    crops_map = {}
+    if paginated:
+        CHUNK_SIZE = 100
+        for i in range(0, len(paginated), CHUNK_SIZE):
+            chunk = paginated[i:i + CHUNK_SIZE]
+            filters = [models.ImageCrop.crop_path.like(f"%{f}%") for f in chunk]
+            chunk_crops = db.query(models.ImageCrop).filter(or_(*filters)).all()
+            for c in chunk_crops:
+                for f in chunk:
+                    if f in c.crop_path:
+                        crops_map[f] = c
+
+    results = []
+    for filename in paginated:
+        crop = crops_map.get(filename)
+        if crop:
+            results.append(CroppedImageInfo(
+                filename=filename,
+                crop_id=crop.id,
+                reading_id=crop.daily_reading_id,
+                timestamp=crop.timestamp,
+                image_url=f"/cropped_dataset/{filename}",
+                crop_type=crop.crop_type,
+                is_orphaned=False
+            ))
+        else:
+            results.append(CroppedImageInfo(
+                filename=filename,
+                image_url=f"/cropped_dataset/{filename}",
                 is_orphaned=True
             ))
 
@@ -259,6 +319,68 @@ async def restore_images(
         db.rollback()
         logger.error(f"❌ RESTORE ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
+
+@images_router.delete("/cropped/{filename:path}")
+def delete_cropped_image(
+    filename: str,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Soft-deletes a crop by moving it from cropped_dataset/ to cropped_dataset/temp_trash/
+    and logs the action in automated_action_logs.
+    """
+    if authorization != "demo-access-token-xyz-789":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    clean_filename = filename.lstrip("/").replace("cropped_dataset/", "", 1)
+
+    crop_dir = "cropped_dataset"
+    trash_dir = os.path.join(crop_dir, "temp_trash")
+    abs_crop_dir = os.path.abspath(crop_dir)
+    file_path = os.path.abspath(os.path.join(crop_dir, clean_filename))
+
+    if not file_path.startswith(abs_crop_dir):
+        raise HTTPException(status_code=400, detail="Invalid filename or path traversal attempt")
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"Crop {clean_filename} not found on disk")
+
+    crop_record = db.query(models.ImageCrop).filter(
+        models.ImageCrop.crop_path.like(f"%{clean_filename}")
+    ).first()
+
+    try:
+        unique_filename = f"{uuid.uuid4().hex}_{os.path.basename(clean_filename)}"
+        dest_path = os.path.join(trash_dir, unique_filename)
+        os.makedirs(trash_dir, exist_ok=True)
+        shutil.move(file_path, dest_path)
+
+        log = models.AutomatedActionLog(
+            filename=clean_filename,
+            original_path=file_path,
+            current_path=f"cropped_dataset/temp_trash/{unique_filename}",
+            action_type="move_to_trash",
+            reason="api_requested_delete"
+        )
+        db.add(log)
+
+        if crop_record:
+            crop_record.crop_path = f"cropped_dataset/temp_trash/{unique_filename}"
+
+        db.commit()
+        logger.info(f"🗑️ Crop moved to trash: {dest_path}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to move crop to trash: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing deletion: {str(e)}")
+
+    return {
+        "status": "success",
+        "message": f"Crop {clean_filename} moved to trash",
+        "log_id": log.id
+    }
+
 
 @images_router.delete("/")
 @images_router.delete("/{filename:path}")
