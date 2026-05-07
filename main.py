@@ -601,6 +601,17 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
         "history": {label: history_list}
     }
 
+def generate_classification(n, p, k, ph, ec):
+    if ph < 5.5 or ph > 7.0:
+        return "pH Lockout"
+    if ec > 2.8:
+        return "Over-Dosed"
+    if ec < 0.6:
+        return "Under-Dosed"
+    if n < 150 or p < 250 or k < 400:
+        return "Macro-Deficiency"
+    return "Optimal"
+
 def generate_recommendation(n, p, k, ph, ec):
     """
     Rule-based engine to convert sensor/AI data into actionable advice.
@@ -699,6 +710,14 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         reading.ec
     )
 
+    classification = generate_classification(
+        latest.predicted_n,
+        latest.predicted_p,
+        latest.predicted_k,
+        reading.ph,
+        reading.ec
+    )
+
     return {
         "timestamp": latest.prediction_date,
         "sensors": {
@@ -712,7 +731,8 @@ def get_dashboard_data(db: Session = Depends(get_db)):
             "k": latest.predicted_k
         },
         "status": {
-            "overall_status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected"
+            "overall_status": classification,
+            "classification": classification
         },
         "recommendation": recommendation
     }
