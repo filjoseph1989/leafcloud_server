@@ -10,7 +10,7 @@ from image_filtering import calculate_greenness
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CROPPED_DIR = os.path.join(BASE_DIR, "cropped_dataset")
 TRASH_DIR = os.path.join(CROPPED_DIR, "temp_trash")
-GREEN_THRESHOLD = 5.0  # Percentage of green pixels required
+GREEN_THRESHOLD = 25.0  # Percentage of green pixels required
 
 def filter_crops():
     db = SessionLocal()
@@ -24,12 +24,17 @@ def filter_crops():
         processed_count = 0
         moved_count = 0
         error_count = 0
+        kept_count = 0
 
         # Walk through cropped_dataset
         for root, dirs, files in os.walk(CROPPED_DIR):
             # Skip the trash directory itself
             if os.path.abspath(root) == os.path.abspath(TRASH_DIR):
                 continue
+            
+            if files:
+                rel_root = os.path.relpath(root, CROPPED_DIR)
+                print(f"\n📂 Scanning: {rel_root} ({len(files)} files)")
             
             for filename in files:
                 if not filename.lower().endswith(('.jpg', '.jpeg', '.png')):
@@ -59,20 +64,25 @@ def filter_crops():
                             metric_value=greenness
                         )
                         db.add(log)
+                    else:
+                        kept_count += 1
                         
-                        if moved_count % 50 == 0:
-                            print(f"Progress: {processed_count} processed, {moved_count} moved...")
-                            db.commit()
+                    if processed_count % 100 == 0:
+                        print(f"  > Progress: {processed_count} files checked... ({moved_count} moved, {kept_count} kept)", end="\r")
+                        db.commit()
                             
                 except Exception as e:
                     # Don't print every EIO error if the drive is still flaky, but log it
                     error_count += 1
+                    if error_count % 10 == 0:
+                        print(f"\n⚠️ Encountered {error_count} errors so far. Latest: {e}")
                     continue
 
         db.commit()
-        print(f"\n--- FILTERING COMPLETE ---")
-        print(f"Total processed: {processed_count}")
-        print(f"Moved to trash:  {moved_count}")
+        print(f"\n\n--- FILTERING COMPLETE ---")
+        print(f"Total checked:   {processed_count}")
+        print(f"Kept (Green):    {kept_count}")
+        print(f"Moved to Trash:  {moved_count}")
         print(f"Errors:          {error_count}")
 
     except Exception as e:

@@ -228,13 +228,13 @@ app.include_router(cropping_router)
 app.include_router(trash_router)
 
 # Serve static images for the app
-os.makedirs("images", exist_ok=True)
-app.mount("/images", StaticFiles(directory="images"), name="images")
-
-# Serve trash images for review
-trash_dir = "cropped_dataset/temp_trash"
-os.makedirs(trash_dir, exist_ok=True)
-app.mount("/temp_trash", StaticFiles(directory=trash_dir), name="temp_trash")
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+_images_dir = os.path.join(_base_dir, "images")
+_trash_dir = os.path.join(_base_dir, "cropped_dataset", "temp_trash")
+os.makedirs(_images_dir, exist_ok=True)
+os.makedirs(_trash_dir, exist_ok=True)
+app.mount("/images", StaticFiles(directory=_images_dir), name="images")
+app.mount("/temp_trash", StaticFiles(directory=_trash_dir), name="temp_trash")
 
 # --- Lifecycle Events ---
 @app.on_event("startup")

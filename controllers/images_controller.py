@@ -50,7 +50,7 @@ def list_images(
     files = []
     for root, _, filenames in os.walk(image_dir):
         for f in filenames:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and not f.startswith('._') and "temp_trash" not in root:
                 # Store relative path from images/
                 rel_path = os.path.relpath(os.path.join(root, f), image_dir)
                 files.append(rel_path)
@@ -288,28 +288,73 @@ def delete_image(
 
     # --- Case A: Permanent Deletion by Log ID ---
     if log_id is not None:
+        if log_id == 0:
+            raise HTTPException(status_code=400, detail="Invalid id=0. Use the filename endpoint to delete orphaned images.")
+
         log = db.query(models.AutomatedActionLog).filter(models.AutomatedActionLog.id == log_id).first()
-        if not log:
-            raise HTTPException(status_code=404, detail=f"Trash log entry with ID {log_id} not found")
+        if log:
+            # Standard path: trash log entry exists, permanently delete it
+            base_dir = os.getcwd()
+            file_to_delete = os.path.join(base_dir, log.current_path)
 
-        # Get absolute paths to ensure correctness
-        base_dir = os.getcwd()
-        file_to_delete = os.path.join(base_dir, log.current_path)
+            if os.path.exists(file_to_delete):
+                try:
+                    os.remove(file_to_delete)
+                    logger.info(f"🔥 Permanently deleted file: {file_to_delete}")
+                except Exception as e:
+                    logger.error(f"⚠️ Error deleting file {file_to_delete}: {e}")
+            else:
+                logger.warning(f"ℹ️ File {file_to_delete} already missing from disk, cleaning up DB record.")
 
-        # Attempt to delete file if it exists
-        if os.path.exists(file_to_delete):
-            try:
-                os.remove(file_to_delete)
-                logger.info(f"🔥 Permanently deleted file: {file_to_delete}")
-            except Exception as e:
-                logger.error(f"⚠️ Error deleting file {file_to_delete}: {e}")
-        else:
-            logger.warning(f"ℹ️ File {file_to_delete} already missing from disk, cleaning up DB record.")
+            db.delete(log)
+            db.commit()
+            return {"status": "success", "message": f"Permanently deleted trash record {log_id}"}
 
-        # Always delete the database log record
-        db.delete(log)
-        db.commit()
-        return {"status": "success", "message": f"Permanently deleted trash record {log_id}"}
+        # Fallback: treat the id as a DailyReading.id and soft-delete by filename
+        logger.warning(f"⚠️ No trash log found for id={log_id}, falling back to DailyReading lookup")
+        reading = db.query(models.DailyReading).filter(models.DailyReading.id == log_id).first()
+        if not reading or not reading.image_path:
+            raise HTTPException(status_code=404, detail=f"No trash log or image record found for ID {log_id}")
+
+        # Strip the leading "images/" prefix stored in the DB path
+        clean_filename = reading.image_path.lstrip("/").replace("images/", "", 1)
+        image_dir = "images"
+        trash_dir = os.path.join(image_dir, "temp_trash")
+        abs_image_dir = os.path.abspath(image_dir)
+        file_path = os.path.abspath(os.path.join(image_dir, clean_filename))
+
+        if not file_path.startswith(abs_image_dir):
+            raise HTTPException(status_code=400, detail="Invalid filename resolved from reading record")
+
+        if not os.path.exists(file_path):
+            # File already gone — just mark DB record as deleted
+            reading.status = "deleted"
+            db.commit()
+            logger.warning(f"ℹ️ File missing on disk for reading {log_id}, marked DB record as deleted.")
+            return {"status": "success", "message": f"Image for reading {log_id} already missing; DB record marked deleted"}
+
+        reading.status = "deleted"
+        try:
+            unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
+            dest_path = os.path.join(trash_dir, unique_filename)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.move(file_path, dest_path)
+
+            action_log = models.AutomatedActionLog(
+                filename=clean_filename,
+                original_path=file_path,
+                current_path=dest_path,
+                action_type="move_to_trash",
+                reason="api_requested_delete"
+            )
+            db.add(action_log)
+            db.commit()
+            logger.info(f"🗑️ Fallback soft-delete: moved {file_path} → {dest_path}")
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Error processing deletion: {str(e)}")
+
+        return {"status": "success", "message": f"Image for reading {log_id} moved to trash and records updated"}
 
     # --- Case B: Move to Trash by Filename ---
     if not filename:
