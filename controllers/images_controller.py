@@ -2,7 +2,7 @@ import os
 import shutil
 import anyio
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from typing import Optional
@@ -11,6 +11,23 @@ from database import get_db
 import models
 import image_filtering
 from schemas.images import PreFilterRequest, RestoreRequest, TrashItemResponse, ImageInfo
+
+import logging
+from datetime import datetime
+
+# Setup logging
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_filename = os.path.join(log_dir, f"log-{datetime.now().strftime('%Y-%m-%d')}.log")
+
+logger = logging.getLogger("leafcloud.images")
+logger.setLevel(logging.INFO)
+
+# Check if handler already exists to avoid duplicate logs in reload mode
+if not logger.handlers:
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
 
 # Router for image administrative actions
 images_router = APIRouter(prefix="/api/v1/images", tags=["Images Admin"])
@@ -33,7 +50,7 @@ def list_images(
     files = []
     for root, _, filenames in os.walk(image_dir):
         for f in filenames:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "temp_trash" not in root:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and not f.startswith('._') and "temp_trash" not in root:
                 # Store relative path from images/
                 rel_path = os.path.relpath(os.path.join(root, f), image_dir)
                 files.append(rel_path)
@@ -91,21 +108,25 @@ def list_images(
 def get_trashed_images(
     skip: int = 0,
     limit: int = 50,
+    trash_type: Optional[str] = Query(None, description="Filter by trash type: 'images' or 'cropped'"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
     """
     Returns a list of images that were moved to trash by automated processes.
-    
+
     Args:
         skip (int): Number of items to skip for pagination.
         limit (int): Maximum number of items to return (capped at 100).
+        trash_type (str, optional): 'images' to see images/temp_trash, 'cropped' for cropped_dataset/temp_trash.
         authorization (str): Auth token.
         db (Session): Database session.
 
     Returns:
         List[TrashItemResponse]: List of trashed image metadata.
     """
+    logger.info(f"📡 API REQUEST: List Trashed Images (type={trash_type}, skip={skip}, limit={limit})")
+
     # 1. Auth Check
     if authorization != "demo-access-token-xyz-789":
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -113,22 +134,35 @@ def get_trashed_images(
     # 2. Enforce maximum limit
     if limit > 100:
         limit = 100
-        
+
     query = db.query(models.AutomatedActionLog)\
-        .filter(models.AutomatedActionLog.action_type == "move_to_trash")\
-        .order_by(models.AutomatedActionLog.timestamp.desc())
-        
+        .filter(models.AutomatedActionLog.action_type == "move_to_trash")
+
+    # 3. Apply trash_type filter
+    if trash_type == "images":
+        query = query.filter(models.AutomatedActionLog.current_path.like("images/%"))
+    elif trash_type == "cropped":
+        query = query.filter(models.AutomatedActionLog.current_path.like("cropped_dataset/%"))
+
+    query = query.order_by(models.AutomatedActionLog.timestamp.desc())
     items = query.offset(skip).limit(limit).all()
-    
+
     # Manually populate image_url for each item
     for item in items:
         # Map current_path to a web-accessible URL
-        # e.g., 'images/temp_trash/file.jpg' -> '/images/temp_trash/file.jpg'
+        # We handle the mount points correctly:
+        # 'images/temp_trash/...' -> '/images/temp_trash/...'
+        # 'cropped_dataset/temp_trash/...' -> '/temp_trash/...' (as per main.py mount)
         if item.current_path:
-            item.image_url = f"/{item.current_path.replace('\\', '/')}"
-            
-    return items
+            if item.current_path.startswith("cropped_dataset/temp_trash"):
+                 # Use the /temp_trash mount point for cropped images
+                 rel_filename = os.path.basename(item.current_path)
+                 item.image_url = f"/temp_trash/{rel_filename}"
+            else:
+                 # Standard images/ mount
+                 item.image_url = f"/{item.current_path.replace('\\', '/')}"
 
+    return items
 @images_router.post("/pre-filter")
 async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get_db)):
     """
@@ -144,7 +178,7 @@ async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get
     Returns:
         dict: Status message and processing statistics.
     """
-    print(f"📡 API REQUEST: Image Pre-Filtering (size={request.size_threshold}, green={request.green_threshold})")
+    logger.info(f"📡 API REQUEST: Image Pre-Filtering (size={request.size_threshold}, green={request.green_threshold})")
     
     image_dir = "images"
     trash_dir = os.path.join(image_dir, "temp_trash")
@@ -159,10 +193,10 @@ async def pre_filter_images(request: PreFilterRequest, db: Session = Depends(get
             request.green_threshold,
             db
         )
-        print(f"✅ PRE-FILTER COMPLETE: {stats}")
+        logger.info(f"✅ PRE-FILTER COMPLETE: {stats}")
         return {"status": "success", "stats": stats}
     except Exception as e:
-        print(f"❌ PRE-FILTER ERROR: {str(e)}")
+        logger.error(f"❌ PRE-FILTER ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @images_router.post("/restore")
@@ -218,25 +252,30 @@ async def restore_images(
     try:
         restored_count = await anyio.to_thread.run_sync(perform_restore, logs)
         db.commit()
-        print(f"♻️ Restored {restored_count} images from trash.")
+        logger.info(f"♻️ Restored {restored_count} images from trash.")
         return {"status": "success", "message": f"Restored {restored_count} images", "restored_count": restored_count}
         
     except Exception as e:
         db.rollback()
-        print(f"❌ RESTORE ERROR: {str(e)}")
+        logger.error(f"❌ RESTORE ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
 
+@images_router.delete("/")
 @images_router.delete("/{filename:path}")
 def delete_image(
-    filename: str,
+    filename: Optional[str] = None,
+    log_id: Optional[int] = Query(None, alias="id"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
     """
-    Moves an image to temp_trash and marks its DB record as deleted.
+    Handles image deletion. 
+    - If 'id' is provided: Performs a PERMANENT deletion of a trashed item.
+    - If 'filename' is provided: Moves an active image to temp_trash.
 
     Args:
-        filename (str): The filename or path of the image to delete.
+        filename (str, optional): The filename or path of the image to move to trash.
+        log_id (int, optional): The ID of a log entry to permanently delete.
         authorization (str): Auth token.
         db (Session): Database session.
 
@@ -247,10 +286,84 @@ def delete_image(
     if authorization != "demo-access-token-xyz-789":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # 2. Cleanup filename (handle optional 'images/' prefix from URL)
+    # --- Case A: Permanent Deletion by Log ID ---
+    if log_id is not None:
+        if log_id == 0:
+            raise HTTPException(status_code=400, detail="Invalid id=0. Use the filename endpoint to delete orphaned images.")
+
+        log = db.query(models.AutomatedActionLog).filter(models.AutomatedActionLog.id == log_id).first()
+        if log:
+            # Standard path: trash log entry exists, permanently delete it
+            base_dir = os.getcwd()
+            file_to_delete = os.path.join(base_dir, log.current_path)
+
+            if os.path.exists(file_to_delete):
+                try:
+                    os.remove(file_to_delete)
+                    logger.info(f"🔥 Permanently deleted file: {file_to_delete}")
+                except Exception as e:
+                    logger.error(f"⚠️ Error deleting file {file_to_delete}: {e}")
+            else:
+                logger.warning(f"ℹ️ File {file_to_delete} already missing from disk, cleaning up DB record.")
+
+            db.delete(log)
+            db.commit()
+            return {"status": "success", "message": f"Permanently deleted trash record {log_id}"}
+
+        # Fallback: treat the id as a DailyReading.id and soft-delete by filename
+        logger.warning(f"⚠️ No trash log found for id={log_id}, falling back to DailyReading lookup")
+        reading = db.query(models.DailyReading).filter(models.DailyReading.id == log_id).first()
+        if not reading or not reading.image_path:
+            raise HTTPException(status_code=404, detail=f"No trash log or image record found for ID {log_id}")
+
+        # Strip the leading "images/" prefix stored in the DB path
+        clean_filename = reading.image_path.lstrip("/").replace("images/", "", 1)
+        image_dir = "images"
+        trash_dir = os.path.join(image_dir, "temp_trash")
+        abs_image_dir = os.path.abspath(image_dir)
+        file_path = os.path.abspath(os.path.join(image_dir, clean_filename))
+
+        if not file_path.startswith(abs_image_dir):
+            raise HTTPException(status_code=400, detail="Invalid filename resolved from reading record")
+
+        if not os.path.exists(file_path):
+            # File already gone — just mark DB record as deleted
+            reading.status = "deleted"
+            db.commit()
+            logger.warning(f"ℹ️ File missing on disk for reading {log_id}, marked DB record as deleted.")
+            return {"status": "success", "message": f"Image for reading {log_id} already missing; DB record marked deleted"}
+
+        reading.status = "deleted"
+        try:
+            unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
+            dest_path = os.path.join(trash_dir, unique_filename)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.move(file_path, dest_path)
+
+            action_log = models.AutomatedActionLog(
+                filename=clean_filename,
+                original_path=file_path,
+                current_path=dest_path,
+                action_type="move_to_trash",
+                reason="api_requested_delete"
+            )
+            db.add(action_log)
+            db.commit()
+            logger.info(f"🗑️ Fallback soft-delete: moved {file_path} → {dest_path}")
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Error processing deletion: {str(e)}")
+
+        return {"status": "success", "message": f"Image for reading {log_id} moved to trash and records updated"}
+
+    # --- Case B: Move to Trash by Filename ---
+    if not filename:
+        raise HTTPException(status_code=400, detail="Either 'id' or 'filename' must be provided")
+
+    # Cleanup filename (handle optional 'images/' prefix from URL)
     clean_filename = filename.lstrip("/").replace("images/", "")
 
-    # 3. Path Traversal Protection & Existence Check
+    # Path Traversal Protection & Existence Check
     image_dir = "images"
     trash_dir = os.path.join(image_dir, "temp_trash")
 
@@ -264,14 +377,14 @@ def delete_image(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"Image {clean_filename} not found on disk")
 
-    # 4. Database Soft Cleanup (if record exists)
+    # Database Soft Cleanup (if DailyReading record exists)
     reading = db.query(models.DailyReading).filter(models.DailyReading.image_path.like(f"%{clean_filename}")).first()
 
     if reading:
         reading.status = "deleted"
-        print(f"♻️ Marked DB record as deleted for reading ID: {reading.id}")
+        logger.info(f"♻️ Marked DB record as deleted for reading ID: {reading.id}")
 
-    # 5. Filesystem Move to Trash
+    # Filesystem Move to Trash
     try:
         unique_filename = f"{uuid.uuid4().hex}_{clean_filename}"
         dest_path = os.path.join(trash_dir, unique_filename)
