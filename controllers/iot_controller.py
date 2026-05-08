@@ -74,6 +74,65 @@ def init_iot_controller(model=None, video_manager=None, bucket_getter=None, expe
     ACTIVE_EXPERIMENT_GETTER = experiment_getter
     PH_UPDATE_REQUESTED_GETTER = ph_update_getter
 
+def predict_from_crops(reading_id: int, db: Session) -> bool:
+    """
+    Runs the AI model on all crops linked to a reading, averages the results,
+    then updates (or creates) the NPKPrediction record for that reading.
+    Returns True if prediction was saved, False otherwise.
+    """
+    if not AI_MODEL:
+        return False
+
+    crops = db.query(models.ImageCrop).filter(
+        models.ImageCrop.daily_reading_id == reading_id
+    ).all()
+
+    if not crops:
+        return False
+
+    crop_preds = []
+    for crop in crops:
+        if not os.path.exists(crop.crop_path):
+            continue
+        try:
+            img = Image.open(crop.crop_path).convert('RGB').resize((224, 224))
+            img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
+            pred = AI_MODEL.predict(img_array, verbose=0)
+            crop_preds.append(pred[0])
+        except Exception as e:
+            print(f"⚠️ predict_from_crops: error on crop {crop.id}: {e}")
+
+    if not crop_preds:
+        return False
+
+    avg = np.mean(crop_preds, axis=0)
+    npk_ml_l, micro_ml_l = avg
+
+    predicted_n = max(0.0, (npk_ml_l * 80.0) + (micro_ml_l * 80.0))
+    predicted_p = max(0.0, (npk_ml_l * 150.0) + (micro_ml_l * 150.0))
+    predicted_k = max(0.0, (npk_ml_l * 150.0) + (micro_ml_l * 360.0))
+
+    pred_record = db.query(models.NPKPrediction).filter(
+        models.NPKPrediction.daily_reading_id == reading_id
+    ).first()
+
+    if pred_record:
+        pred_record.predicted_n = float(predicted_n)
+        pred_record.predicted_p = float(predicted_p)
+        pred_record.predicted_k = float(predicted_k)
+    else:
+        pred_record = models.NPKPrediction(
+            daily_reading_id=reading_id,
+            predicted_n=float(predicted_n),
+            predicted_p=float(predicted_p),
+            predicted_k=float(predicted_k)
+        )
+        db.add(pred_record)
+
+    db.commit()
+    return True
+
+
 def get_active_bucket_id() -> Optional[str]:
     """Helper to get the current global active_bucket_id."""
     if ACTIVE_BUCKET_GETTER:

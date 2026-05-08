@@ -1,4 +1,5 @@
 import os
+import re
 import platform
 import socket
 import threading
@@ -36,7 +37,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict
 
 from fastapi import FastAPI, Form, Depends, HTTPException, Header, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -213,6 +214,27 @@ init_iot_controller(
 
 app = FastAPI(title="LEAFCLOUD API")
 
+@app.middleware("http")
+async def handle_stale_nfs(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except OSError as e:
+        if e.errno == 70:  # Stale NFS file handle
+            logger.warning("Stale NFS handle serving %s — drive may have remounted", request.url.path)
+            return Response("File unavailable: storage device not ready", status_code=503)
+        raise
+
+_CROP_SUFFIX_RE = re.compile(r"_[a-f0-9]{6}\.jpg$")
+
+@app.middleware("http")
+async def redirect_misrouted_crops(request: Request, call_next):
+    response = await call_next(request)
+    if response.status_code == 404 and request.url.path.startswith("/images/"):
+        tail = request.url.path[len("/images/"):]
+        if _CROP_SUFFIX_RE.search(tail):
+            return RedirectResponse(url=f"/cropped_dataset/{tail}", status_code=301)
+    return response
+
 @app.get("/")
 def read_root():
     return {
@@ -230,10 +252,13 @@ app.include_router(trash_router)
 # Serve static images for the app
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 _images_dir = os.path.join(_base_dir, "images")
-_trash_dir = os.path.join(_base_dir, "cropped_dataset", "temp_trash")
+_cropped_dir = os.path.join(_base_dir, "cropped_dataset")
+_trash_dir = os.path.join(_cropped_dir, "temp_trash")
 os.makedirs(_images_dir, exist_ok=True)
+os.makedirs(_cropped_dir, exist_ok=True)
 os.makedirs(_trash_dir, exist_ok=True)
 app.mount("/images", StaticFiles(directory=_images_dir), name="images")
+app.mount("/cropped_dataset", StaticFiles(directory=_cropped_dir), name="cropped_dataset")
 app.mount("/temp_trash", StaticFiles(directory=_trash_dir), name="temp_trash")
 
 # --- Lifecycle Events ---
@@ -563,7 +588,7 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
             "ph": r.ph,
             "ec": r.ec,
             "water_temp": r.water_temp,
-            "image_url": f"/images/{os.path.basename(r.image_path)}" if r.image_path else None,
+            "image_url": f"/{r.image_path.replace(chr(92), '/')}" if r.image_path else None,
             "n": r.prediction.predicted_n if r.prediction else None,
             "p": r.prediction.predicted_p if r.prediction else None,
             "k": r.prediction.predicted_k if r.prediction else None,
@@ -575,6 +600,17 @@ def get_experiment_history(experiment_id: int, db: Session = Depends(get_db)):
         "experiment_id": experiment.experiment_id,
         "history": {label: history_list}
     }
+
+def generate_classification(n, p, k, ph, ec):
+    if ph < 5.5 or ph > 7.0:
+        return "pH Lockout"
+    if ec > 2.8:
+        return "Over-Dosed"
+    if ec < 0.6:
+        return "Under-Dosed"
+    if n < 150 or p < 250 or k < 400:
+        return "Macro-Deficiency"
+    return "Optimal"
 
 def generate_recommendation(n, p, k, ph, ec):
     """
@@ -674,21 +710,31 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         reading.ec
     )
 
+    classification = generate_classification(
+        latest.predicted_n,
+        latest.predicted_p,
+        latest.predicted_k,
+        reading.ph,
+        reading.ec
+    )
+
     return {
         "timestamp": latest.prediction_date,
-        "status": "Optimal" if latest.predicted_n > 100 else "Deficiency Detected",
-        "recommendation": recommendation,
-        "image_url": reading.image_path.replace("\\", "/") if reading.image_path else None,
         "sensors": {
-            "ph": reading.ph,
             "ec": reading.ec,
-            "temp": reading.water_temp
+            "ph": reading.ph,
+            "temp_c": reading.water_temp
         },
-        "npk_levels": {
-            "Nitrogen": latest.predicted_n,
-            "Phosphorus": latest.predicted_p,
-            "Potassium": latest.predicted_k
-        }
+        "predictions": {
+            "n": latest.predicted_n,
+            "p": latest.predicted_p,
+            "k": latest.predicted_k
+        },
+        "status": {
+            "overall_status": classification,
+            "classification": classification
+        },
+        "recommendation": recommendation
     }
 
 @app.get("/app/history/")

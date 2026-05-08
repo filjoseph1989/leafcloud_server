@@ -82,6 +82,16 @@ class RestoreRequest(BaseModel):
     """Request schema for restoring images from the trash."""
     log_ids: List[int] = Field(..., description="List of log IDs to restore from trash")
 
+class CroppedImageInfo(BaseModel):
+    """Metadata for a single cropped image in cropped_dataset."""
+    filename: str
+    crop_id: Optional[int] = None
+    reading_id: Optional[int] = None
+    timestamp: Optional[datetime] = None
+    image_url: str
+    crop_type: Optional[str] = None
+    is_orphaned: bool = False
+
 class TrashItemResponse(BaseModel):
     """Response schema for items currently in the automated trash."""
     model_config = ConfigDict(from_attributes=True)

@@ -9,6 +9,7 @@ from typing import List
 from schemas.cropping import CropRequest, SkipRequest, CropNextResponse
 from database import get_db
 import models
+from controllers.iot_controller import predict_from_crops
 
 cropping_router = APIRouter(prefix="/api/v1/images/crop", tags=["Image Cropping"])
 
@@ -166,17 +167,16 @@ def submit_crop(request: CropRequest, db: Session = Depends(get_db)):
     ).first()
 
     if reading:
-        # Save the crop link
         new_crop = models.ImageCrop(
             daily_reading_id=reading.id,
-            crop_path=dest_path.replace("\\", "/") # Normalize for web/database
+            crop_path=dest_path.replace("\\", "/")
         )
         db.add(new_crop)
         db.commit()
-    
-    # Mark the original image as processed so the progress moves forward
+        predict_from_crops(reading.id, db)
+
     save_progress(request.rel_path, db)
-    
+
     return {"status": "success", "saved_path": dest_path, "linked_reading_id": reading.id if reading else None}
 
 @cropping_router.post("/auto-grid")
@@ -233,13 +233,13 @@ def auto_grid_crop(request: SkipRequest, db: Session = Depends(get_db)):
 
     if reading:
         db.commit()
-    
-    # Mark as processed
+        predict_from_crops(reading.id, db)
+
     save_progress(request.rel_path, db)
-    
+
     return {
-        "status": "success", 
-        "crops_created": crops_saved, 
+        "status": "success",
+        "crops_created": crops_saved,
         "message": f"Automatically created {crops_saved} grid crops for {request.rel_path}"
     }
 
