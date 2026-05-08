@@ -286,9 +286,13 @@ def capture_frame(output_path: str) -> bool:
     frame = VIDEO_MANAGER.get_latest_frame()
 
     if frame is not None:
-        cv2.imwrite(output_path, frame)
-        print(f"✅ Frame saved to {output_path}")
-        return True
+        success = cv2.imwrite(output_path, frame)
+        if success:
+            print(f"✅ Frame saved successfully to {output_path}")
+            return True
+        else:
+            print(f"❌ cv2.imwrite failed to save frame to {output_path}")
+            return False
 
     print(f"❌ Failed to capture frame: No recent frame in VideoManager.")
     return False

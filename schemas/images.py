@@ -60,6 +60,12 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class RegisterRequest(BaseModel):
+    """Request schema for user registration."""
+    name: str
+    email: str
+    password: str
+
 class ImageInfo(BaseModel):
     """Metadata and status information for a single image."""
     filename: str

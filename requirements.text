@@ -23,3 +23,5 @@ requests
 pytest
 pytest-cov
 httpx
+passlib
+bcrypt<4.0.0

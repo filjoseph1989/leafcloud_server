@@ -200,5 +200,4 @@ if __name__ == "__main__":
         model.save(MODEL_SAVE_PATH)
         print(f"✅ Model saved to {MODEL_SAVE_PATH}")
         
-        # Cleanup local images after training (Optional)
-        # shutil.rmtree(LOCAL_DATA_DIR)
+        shutil.rmtree(LOCAL_DATA_DIR)
