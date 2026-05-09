@@ -70,7 +70,7 @@ def calculate_greenness(image_path: str) -> float:
     
     # Define range for green color in HSV
     # These thresholds are typical for green plants
-    lower_green = np.array([35, 40, 40])
+    lower_green = np.array([35, 50, 60])
     upper_green = np.array([85, 255, 255])
     
     # Threshold the HSV image to get only green colors

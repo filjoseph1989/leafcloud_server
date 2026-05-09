@@ -1,5 +1,4 @@
 import os
-import shutil
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -25,7 +24,6 @@ EPOCHS_PHASE2 = 10   # unfreeze top layers — fine-tune
 FINETUNE_LAYERS = 30 # number of MobileNetV2 top layers to unfreeze
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M")
 MODEL_SAVE_PATH = f"leafcloud_multimodal_model_{TIMESTAMP}.keras"
-LOCAL_DATA_DIR = "/Users/fil/.gemini/tmp/leafcloud_training_data"
 
 # Sensor normalization ranges (min, max) based on cleaned_daily_readings
 SENSOR_NORM = {
@@ -74,7 +72,6 @@ def get_dataset():
             return True
         except:
             return False
-
     tqdm.pandas(desc="Checking files")
     df['exists'] = df['image_path'].progress_apply(is_accessible)
     missing = (~df['exists']).sum()
@@ -82,24 +79,7 @@ def get_dataset():
         print(f"⚠️  {missing} inaccessible files removed.")
     df = df[df['exists']].drop(columns=['exists']).reset_index(drop=True)
 
-    # Copy to local storage to bypass NFS issues
-    print(f"📦 Copying {len(df)} images to local storage...")
-    if os.path.exists(LOCAL_DATA_DIR):
-        shutil.rmtree(LOCAL_DATA_DIR)
-    os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
-
-    local_paths = []
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="Copying"):
-        dst = os.path.join(LOCAL_DATA_DIR, f"{i}_{os.path.basename(row['image_path'])}")
-        try:
-            shutil.copy2(row['image_path'], dst)
-            local_paths.append(dst)
-        except:
-            local_paths.append(None)
-
-    df['image_path'] = local_paths
-    df = df.dropna(subset=['image_path']).reset_index(drop=True)
-    print(f"✅ {len(df)} images ready locally.")
+    print(f"✅ {len(df)} images found.")
 
     # Normalize sensor values to [0, 1]
     for col, (lo, hi) in SENSOR_NORM.items():
@@ -134,6 +114,7 @@ class MultiModalGenerator(tf.keras.utils.Sequence):
     Augmentation applied to images during training.
     """
     def __init__(self, df, batch_size, img_size, augment=False):
+        super().__init__()
         self.df         = df.reset_index(drop=True)
         self.batch_size = batch_size
         self.img_size   = img_size
@@ -167,7 +148,7 @@ class MultiModalGenerator(tf.keras.utils.Sequence):
         labels  = batch[['npk_val', 'micro_val']].values.astype(np.float32)
         weights = batch['sample_weight'].values.astype(np.float32)
 
-        return [images, sensors], labels, weights
+        return (images, sensors), labels, weights
 
 def create_generators(df):
     split = int(len(df) * 0.8)
@@ -278,5 +259,3 @@ if __name__ == "__main__":
         final_mae = history_p2.history['val_mae'][-1]
         print(f"   Final val MAE (phase 2): {final_mae:.4f}")
 
-        shutil.rmtree(LOCAL_DATA_DIR)
-        print("🧹 Local cache cleaned up.")

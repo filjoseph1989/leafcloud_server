@@ -245,7 +245,7 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 try:
     import tensorflow as tf
     # Load the new regression model
-    model = tf.keras.models.load_model("leafcloud_regression_model.keras")
+    model = tf.keras.models.load_model("leafcloud_regression_model_20260508_0235.keras")
     print("🧠 AI Regression Model (NPK/Micro) loaded successfully.")
 except Exception as e:
     print(f"⚠️ AI Model not found or failed to load: {e}. Using dummy predictions.")

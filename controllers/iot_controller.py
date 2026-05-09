@@ -1,7 +1,7 @@
 import os
 import shutil
 import cv2
-import uuid
+import random
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, WebSocket, WebSocketDisconnect
@@ -14,7 +14,7 @@ from typing import List
 from database import get_db
 import models
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
-from image_filtering import calculate_greenness
+
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
@@ -22,7 +22,6 @@ iot_router = APIRouter(prefix="/iot", tags=["IoT"])
 # Configuration for auto-cropping
 CROP_SIZE = 224
 GREEN_THRESHOLD = 30.0 # Minimum 30% green to be considered a leaf
-CROPPED_DATASET_DIR = "cropped_dataset"
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -95,6 +94,83 @@ def _normalize_sensors(reading) -> np.ndarray:
         norm(reading.ec,         *SENSOR_NORM['ec']),
         norm(reading.water_temp, *SENSOR_NORM['water_temp']),
     ]], dtype=np.float32)
+
+def _is_green_array(crop_bgr) -> bool:
+    """Greenness check directly on a BGR numpy array — no temp file needed."""
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    lower_green = np.array([35, 50, 60])
+    upper_green = np.array([85, 255, 255])
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    total = crop_bgr.shape[0] * crop_bgr.shape[1]
+    return (cv2.countNonZero(mask) / total * 100.0) >= GREEN_THRESHOLD if total else False
+
+
+def _get_all_crop_coords(w: int, h: int, size: int):
+    """Returns (x, y) coords for grid + right-edge + bottom-edge + corner + 3 random crops."""
+    coords = []
+    for y in range(0, h - size + 1, size):
+        for x in range(0, w - size + 1, size):
+            coords.append((x, y))
+    if w > size:
+        for y in range(0, h - size + 1, size):
+            coords.append((w - size, y))
+    if h > size:
+        for x in range(0, w - size + 1, size):
+            coords.append((x, h - size))
+    if w > size and h > size:
+        coords.append((w - size, h - size))
+    for _ in range(3):
+        coords.append((random.randint(0, w - size), random.randint(0, h - size)))
+    return coords
+
+
+def _predict_from_arrays(crop_arrays: list, reading, db: Session) -> bool:
+    """Run AI prediction on in-memory crop arrays. No file I/O, no DB crop records."""
+    if not AI_MODEL or not crop_arrays:
+        return False
+
+    is_multimodal = len(AI_MODEL.inputs) > 1
+    sensor_array = _normalize_sensors(reading) if (is_multimodal and reading) else None
+
+    crop_preds = []
+    for crop_bgr in crop_arrays:
+        try:
+            crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+            img_array = np.expand_dims(cv2.resize(crop_rgb, (224, 224)) / 255.0, axis=0)
+            if is_multimodal and sensor_array is not None:
+                pred = AI_MODEL.predict([img_array, sensor_array], verbose=0)
+            else:
+                pred = AI_MODEL.predict(img_array, verbose=0)
+            crop_preds.append(pred[0])
+        except Exception as e:
+            print(f"⚠️ _predict_from_arrays: crop error: {e}")
+
+    if not crop_preds:
+        return False
+
+    avg = np.mean(crop_preds, axis=0)
+    npk_ml_l, micro_ml_l = avg
+    predicted_n = max(0.0, (npk_ml_l * 80.0) + (micro_ml_l * 80.0))
+    predicted_p = max(0.0, (npk_ml_l * 150.0) + (micro_ml_l * 150.0))
+    predicted_k = max(0.0, (npk_ml_l * 150.0) + (micro_ml_l * 360.0))
+
+    pred_record = db.query(models.NPKPrediction).filter(
+        models.NPKPrediction.daily_reading_id == reading.id
+    ).first()
+    if pred_record:
+        pred_record.predicted_n = float(predicted_n)
+        pred_record.predicted_p = float(predicted_p)
+        pred_record.predicted_k = float(predicted_k)
+    else:
+        db.add(models.NPKPrediction(
+            daily_reading_id=reading.id,
+            predicted_n=float(predicted_n),
+            predicted_p=float(predicted_p),
+            predicted_k=float(predicted_k)
+        ))
+    db.commit()
+    return True
+
 
 def predict_from_crops(reading_id: int, db: Session) -> bool:
     """
@@ -505,8 +581,8 @@ async def upload_from_iot(
         experiment_id=experiment.id,
         image_path=file_path,
         ph=round(ph, 2),
-        ph_is_estimated=True,  # This endpoint always starts as estimated
-        needs_ph_update=True,
+        ph_is_estimated=False,  # This endpoint always starts as estimated
+        needs_ph_update=False,
         ec=round(ec, 2),
         water_temp=round(temp, 2)
     )
@@ -514,88 +590,47 @@ async def upload_from_iot(
     db.commit()
     db.refresh(reading)
 
-    # D. Auto-Cropping & AI Analysis
-    crops_created = 0
+    # D. Auto-Cropping & AI Analysis (in-memory, no permanent crop storage)
+    crops_analyzed = 0
     if AI_MODEL:
         try:
             img = cv2.imread(file_path)
             if img is not None:
                 h, w = img.shape[:2]
-                stride = CROP_SIZE
-                
-                # Create destination folder for crops
-                dest_folder = os.path.join(CROPPED_DATASET_DIR, date_str, bucket_label)
-                os.makedirs(dest_folder, exist_ok=True)
-                
-                base_name = os.path.splitext(filename)[0]
-                
-                # Iterate through grid
-                for y in range(0, h - CROP_SIZE + 1, stride):
-                    for x in range(0, w - CROP_SIZE + 1, stride):
-                        crop = img[y:y + CROP_SIZE, x:x + CROP_SIZE]
-                        
-                        # Temporarily save to check greenness
-                        temp_crop_path = f"temp_crop_{uuid.uuid4().hex}.jpg"
-                        cv2.imwrite(temp_crop_path, crop)
-                        
-                        if calculate_greenness(temp_crop_path) >= GREEN_THRESHOLD:
-                            # Keep it
-                            unique_id = uuid.uuid4().hex[:6]
-                            dest_filename = f"{base_name}_grid_{y}_{x}_{unique_id}.jpg"
-                            dest_path = os.path.join(dest_folder, dest_filename)
-                            
-                            shutil.move(temp_crop_path, dest_path)
-                            
-                            new_crop = models.ImageCrop(
-                                daily_reading_id=reading.id,
-                                crop_path=dest_path.replace("\\", "/")
-                            )
-                            db.add(new_crop)
-                            crops_created += 1
-                        else:
-                            # Discard
-                            os.remove(temp_crop_path)
-                
-                db.commit()
-                
-                # Run AI on the collected crops
-                if crops_created > 0:
-                    predict_from_crops(reading.id, db)
-                    print(f"✅ AI Analysis complete using {crops_created} crops.")
+
+                green_crops = [
+                    img[y:y + CROP_SIZE, x:x + CROP_SIZE]
+                    for x, y in _get_all_crop_coords(w, h, CROP_SIZE)
+                    if _is_green_array(img[y:y + CROP_SIZE, x:x + CROP_SIZE])
+                ]
+
+                if not green_crops:
+                    print("⚠️ No green leaves detected. Falling back to center crop.")
+                    cy, cx = h // 2, w // 2
+                    y1, x1 = max(0, cy - CROP_SIZE // 2), max(0, cx - CROP_SIZE // 2)
+                    green_crops = [img[y1:y1 + CROP_SIZE, x1:x1 + CROP_SIZE]]
+
+                crops_analyzed = len(green_crops)
+                if _predict_from_arrays(green_crops, reading, db):
+                    print(f"✅ AI Analysis complete using {crops_analyzed} crops.")
                 else:
-                    # Fallback: If no green leaves found, use the center of the image
-                    print("⚠️ No green leaves detected in grid. Falling back to center crop.")
-                    center_y, center_x = h // 2, w // 2
-                    y1, x1 = max(0, center_y - CROP_SIZE//2), max(0, center_x - CROP_SIZE//2)
-                    crop = img[y1:y1+CROP_SIZE, x1:x1+CROP_SIZE]
-                    dest_path = os.path.join(dest_folder, f"{base_name}_fallback.jpg")
-                    cv2.imwrite(dest_path, crop)
-                    
-                    new_crop = models.ImageCrop(
-                        daily_reading_id=reading.id,
-                        crop_path=dest_path.replace("\\", "/")
-                    )
-                    db.add(new_crop)
-                    db.commit()
-                    predict_from_crops(reading.id, db)
+                    print("⚠️ AI prediction failed.")
 
         except Exception as e:
             print(f"❌ Auto-cropping/AI Error: {e}")
             db.rollback()
     else:
-        # --- FIX: Ensure NPKPrediction exists even if AI_MODEL is None ---
         print("ℹ️ AI_MODEL is None. Creating dummy NPKPrediction for dashboard.")
-        dummy_pred = models.NPKPrediction(
+        db.add(models.NPKPrediction(
             daily_reading_id=reading.id,
             predicted_n=100.0,
             predicted_p=40.0,
             predicted_k=160.0
-        )
-        db.add(dummy_pred)
+        ))
         db.commit()
 
     return {
-        "status": "success", 
-        "message": f"Data processed. Created {crops_created} crops for AI analysis.",
-        "crops_count": crops_created
+        "status": "success",
+        "message": f"Data processed. Analyzed {crops_analyzed} crops.",
+        "crops_count": crops_analyzed
     }
