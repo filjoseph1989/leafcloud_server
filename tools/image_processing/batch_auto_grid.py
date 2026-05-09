@@ -17,7 +17,8 @@ from controllers.cropping_controller import (
 from image_filtering import calculate_greenness, delete_macos_metadata
 
 # Threshold for greenness filtering
-GREEN_THRESHOLD = 5.0
+GREEN_THRESHOLD = 30.0  # Percentage of green pixels required
+
 TRASH_DIR = os.path.join(OUTPUT_DIR, "temp_trash")
 
 def get_additional_crop_coords(w, h, size):

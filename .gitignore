@@ -42,20 +42,16 @@ leafcloud-queries.dbcnb
 .images_b/
 .images_c/
 
-cropped_dataset/
-
 .leafcloud-queries.dbcnb
-.leafcloud_backup_20260414_204522.sql
 
 database-query.result
+conductor/clean-data-plan.md
 
-leafcloud_regression_model.keras
-leafcloud_regression_model_20260429_2254.keras
+.cropped_dataset_2/
+leafcloud2_backup_20260509_134532.sql
+leafcloud2_backup_20260509_144934.sql
+leafcloud2_backup_20260509_144956.sql
+leafcloud2_backup_20260509_155642.sql
 
 .cropped_dataset/
-.images_d/
-.leafcloud2_backup_20260501_235938.sql
-.leafcloud2_backup_20260503_181613.sql
-.leafcloud_regression_model.keras
-.leafcloud_regression_model_20260429_2254.keras
-conductor/clean-data-plan.md
+cropped_dataset/

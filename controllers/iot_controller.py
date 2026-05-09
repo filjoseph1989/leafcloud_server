@@ -1,6 +1,7 @@
 import os
 import shutil
 import cv2
+import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Form, WebSocket, WebSocketDisconnect
@@ -13,9 +14,15 @@ from typing import List
 from database import get_db
 import models
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
+from image_filtering import calculate_greenness
 
 # The router for all IoT-related endpoints
 iot_router = APIRouter(prefix="/iot", tags=["IoT"])
+
+# Configuration for auto-cropping
+CROP_SIZE = 224
+GREEN_THRESHOLD = 30.0 # Minimum 30% green to be considered a leaf
+CROPPED_DATASET_DIR = "cropped_dataset"
 
 # WebSocket Connection Manager
 class ConnectionManager:
@@ -74,10 +81,26 @@ def init_iot_controller(model=None, video_manager=None, bucket_getter=None, expe
     ACTIVE_EXPERIMENT_GETTER = experiment_getter
     PH_UPDATE_REQUESTED_GETTER = ph_update_getter
 
+SENSOR_NORM = {
+    'ph':         (3.0, 10.0),
+    'ec':         (0.0, 10.0),
+    'water_temp': (15.0, 35.0),
+}
+
+def _normalize_sensors(reading) -> np.ndarray:
+    def norm(val, lo, hi):
+        return float(np.clip((val - lo) / (hi - lo), 0.0, 1.0))
+    return np.array([[
+        norm(reading.ph,         *SENSOR_NORM['ph']),
+        norm(reading.ec,         *SENSOR_NORM['ec']),
+        norm(reading.water_temp, *SENSOR_NORM['water_temp']),
+    ]], dtype=np.float32)
+
 def predict_from_crops(reading_id: int, db: Session) -> bool:
     """
     Runs the AI model on all crops linked to a reading, averages the results,
     then updates (or creates) the NPKPrediction record for that reading.
+    Supports both single-input (image-only) and multi-modal (image + sensor) models.
     Returns True if prediction was saved, False otherwise.
     """
     if not AI_MODEL:
@@ -90,6 +113,14 @@ def predict_from_crops(reading_id: int, db: Session) -> bool:
     if not crops:
         return False
 
+    # Fetch sensor values for this reading
+    reading = db.query(models.DailyReading).filter(
+        models.DailyReading.id == reading_id
+    ).first()
+
+    is_multimodal = len(AI_MODEL.inputs) > 1
+    sensor_array  = _normalize_sensors(reading) if (is_multimodal and reading) else None
+
     crop_preds = []
     for crop in crops:
         if not os.path.exists(crop.crop_path):
@@ -97,7 +128,10 @@ def predict_from_crops(reading_id: int, db: Session) -> bool:
         try:
             img = Image.open(crop.crop_path).convert('RGB').resize((224, 224))
             img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
-            pred = AI_MODEL.predict(img_array, verbose=0)
+            if is_multimodal and sensor_array is not None:
+                pred = AI_MODEL.predict([img_array, sensor_array], verbose=0)
+            else:
+                pred = AI_MODEL.predict(img_array, verbose=0)
             crop_preds.append(pred[0])
         except Exception as e:
             print(f"⚠️ predict_from_crops: error on crop {crop.id}: {e}")
@@ -333,6 +367,57 @@ def resolve_experiment(db: Session, experiment_id: Optional[str] = None, bucket_
             
     return experiment
 
+VALID_BUCKET_LABELS = ['NPK', 'Micro', 'Mix', 'Water']
+
+class NewExperimentRequest(BaseModel):
+    experiment_id: str
+    bucket_label: str
+    location: Optional[str] = None
+
+@iot_router.get("/experiments/")
+def list_experiments(db: Session = Depends(get_db)):
+    """Returns all experiments — used by Pi to let operator select which bucket."""
+    experiments = db.query(models.Experiment).order_by(models.Experiment.id).all()
+    return [
+        {
+            "id":            e.id,
+            "experiment_id": e.experiment_id,
+            "bucket_label":  e.bucket_label,
+            "start_date":    str(e.start_date),
+        }
+        for e in experiments
+    ]
+
+@iot_router.post("/experiments/", status_code=201)
+def create_experiment(req: NewExperimentRequest, db: Session = Depends(get_db)):
+    """Creates a new experiment record — called by Pi when operator selects 'New'."""
+    if req.bucket_label not in VALID_BUCKET_LABELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid bucket_label '{req.bucket_label}'. Must be one of {VALID_BUCKET_LABELS}"
+        )
+    existing = db.query(models.Experiment).filter(
+        models.Experiment.experiment_id == req.experiment_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Experiment '{req.experiment_id}' already exists.")
+
+    experiment = models.Experiment(
+        experiment_id=req.experiment_id,
+        bucket_label=req.bucket_label,
+        start_date=datetime.now().date()
+    )
+    db.add(experiment)
+    db.commit()
+    db.refresh(experiment)
+    return {
+        "status":        "created",
+        "id":            experiment.id,
+        "experiment_id": experiment.experiment_id,
+        "bucket_label":  experiment.bucket_label,
+        "start_date":    str(experiment.start_date),
+    }
+
 @iot_router.post("/sensor_data/", status_code=201)
 async def create_sensor_data(data: SensorData, db: Session = Depends(get_db)):
     """
@@ -392,6 +477,7 @@ async def upload_from_iot(
     ec: float = Form(...),
     temp: float = Form(...),
     bucket_label: str = Form("unknown"),
+    experiment_id: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -412,62 +498,104 @@ async def upload_from_iot(
         shutil.copyfileobj(image.file, buffer)
 
     # B. Find or Create Experiment
-    experiment = resolve_experiment(db, bucket_label=bucket_label)
+    experiment = resolve_experiment(db, experiment_id=experiment_id, bucket_label=bucket_label)
 
     # C. Save Sensor Data
     reading = models.DailyReading(
         experiment_id=experiment.id,
         image_path=file_path,
-        ph=ph,
+        ph=round(ph, 2),
         ph_is_estimated=True,  # This endpoint always starts as estimated
         needs_ph_update=True,
-        ec=ec,
-        water_temp=temp
+        ec=round(ec, 2),
+        water_temp=round(temp, 2)
     )
     db.add(reading)
     db.commit()
     db.refresh(reading)
 
-    # D. Run AI
-    predicted_n, predicted_p, predicted_k = 0.0, 0.0, 0.0
-
+    # D. Auto-Cropping & AI Analysis
+    crops_created = 0
     if AI_MODEL:
         try:
-            img = Image.open(file_path).convert('RGB').resize((224, 224))
-            img_array = np.expand_dims(np.array(img) / 255.0, axis=0)
-            prediction = AI_MODEL.predict(img_array)
-            
-            # Prediction is [npk_ml_l, micro_ml_l]
-            npk_ml_l, micro_ml_l = prediction[0]
-            
-            # Precise Mapping based on user ratios:
-            # NPK Solution (8-15-15) -> 1ml/L = 80ppm N, 150ppm P, 150ppm K
-            # Micro Solution (8-15-36) -> 1ml/L = 80ppm N, 150ppm P, 360ppm K
-            # Since you use 2ml/L, a prediction of 2.0 will correctly result in 
-            # 160ppm N (80 * 2) for the individual buckets.
-            predicted_n = (npk_ml_l * 80.0) + (micro_ml_l * 80.0)
-            predicted_p = (npk_ml_l * 150.0) + (micro_ml_l * 150.0)
-            predicted_k = (npk_ml_l * 150.0) + (micro_ml_l * 360.0)
-            
-            # Ensure no negative values due to noise
-            predicted_n = max(0.0, predicted_n)
-            predicted_p = max(0.0, predicted_p)
-            predicted_k = max(0.0, predicted_k)
-            
+            img = cv2.imread(file_path)
+            if img is not None:
+                h, w = img.shape[:2]
+                stride = CROP_SIZE
+                
+                # Create destination folder for crops
+                dest_folder = os.path.join(CROPPED_DATASET_DIR, date_str, bucket_label)
+                os.makedirs(dest_folder, exist_ok=True)
+                
+                base_name = os.path.splitext(filename)[0]
+                
+                # Iterate through grid
+                for y in range(0, h - CROP_SIZE + 1, stride):
+                    for x in range(0, w - CROP_SIZE + 1, stride):
+                        crop = img[y:y + CROP_SIZE, x:x + CROP_SIZE]
+                        
+                        # Temporarily save to check greenness
+                        temp_crop_path = f"temp_crop_{uuid.uuid4().hex}.jpg"
+                        cv2.imwrite(temp_crop_path, crop)
+                        
+                        if calculate_greenness(temp_crop_path) >= GREEN_THRESHOLD:
+                            # Keep it
+                            unique_id = uuid.uuid4().hex[:6]
+                            dest_filename = f"{base_name}_grid_{y}_{x}_{unique_id}.jpg"
+                            dest_path = os.path.join(dest_folder, dest_filename)
+                            
+                            shutil.move(temp_crop_path, dest_path)
+                            
+                            new_crop = models.ImageCrop(
+                                daily_reading_id=reading.id,
+                                crop_path=dest_path.replace("\\", "/")
+                            )
+                            db.add(new_crop)
+                            crops_created += 1
+                        else:
+                            # Discard
+                            os.remove(temp_crop_path)
+                
+                db.commit()
+                
+                # Run AI on the collected crops
+                if crops_created > 0:
+                    predict_from_crops(reading.id, db)
+                    print(f"✅ AI Analysis complete using {crops_created} crops.")
+                else:
+                    # Fallback: If no green leaves found, use the center of the image
+                    print("⚠️ No green leaves detected in grid. Falling back to center crop.")
+                    center_y, center_x = h // 2, w // 2
+                    y1, x1 = max(0, center_y - CROP_SIZE//2), max(0, center_x - CROP_SIZE//2)
+                    crop = img[y1:y1+CROP_SIZE, x1:x1+CROP_SIZE]
+                    dest_path = os.path.join(dest_folder, f"{base_name}_fallback.jpg")
+                    cv2.imwrite(dest_path, crop)
+                    
+                    new_crop = models.ImageCrop(
+                        daily_reading_id=reading.id,
+                        crop_path=dest_path.replace("\\", "/")
+                    )
+                    db.add(new_crop)
+                    db.commit()
+                    predict_from_crops(reading.id, db)
+
         except Exception as e:
-            print(f"Prediction Error: {e}")
+            print(f"❌ Auto-cropping/AI Error: {e}")
+            db.rollback()
     else:
-        # Dummy fallback
-        predicted_n, predicted_p, predicted_k = 100.0, 40.0, 160.0
+        # --- FIX: Ensure NPKPrediction exists even if AI_MODEL is None ---
+        print("ℹ️ AI_MODEL is None. Creating dummy NPKPrediction for dashboard.")
+        dummy_pred = models.NPKPrediction(
+            daily_reading_id=reading.id,
+            predicted_n=100.0,
+            predicted_p=40.0,
+            predicted_k=160.0
+        )
+        db.add(dummy_pred)
+        db.commit()
 
-    # E. Save Prediction
-    pred_record = models.NPKPrediction(
-        daily_reading_id=reading.id,
-        predicted_n=float(predicted_n),
-        predicted_p=float(predicted_p),
-        predicted_k=float(predicted_k)
-    )
-    db.add(pred_record)
-    db.commit()
-
-    return {"status": "success", "message": "Data processed and NPK calculated"}
+    return {
+        "status": "success", 
+        "message": f"Data processed. Created {crops_created} crops for AI analysis.",
+        "crops_count": crops_created
+    }

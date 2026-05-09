@@ -750,10 +750,10 @@ async def video_feed():
 # --- 3. ENDPOINT FOR MOBILE APP (Android uses this) ---
 @app.get("/app/latest_status/")
 def get_dashboard_data(request: Request, db: Session = Depends(get_db)):
-    # The App only ASKS for data (GET), it doesn't send data.
+    # Sort by the DailyReading ID to get the absolute last record added to the DB
     latest = db.query(models.NPKPrediction)\
         .join(models.DailyReading)\
-        .order_by(desc(models.NPKPrediction.prediction_date))\
+        .order_by(desc(models.DailyReading.id))\
         .first()
 
     if not latest:
