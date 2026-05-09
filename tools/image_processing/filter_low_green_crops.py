@@ -8,16 +8,14 @@ from image_filtering import calculate_greenness
 
 # Configuration
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
-CROPPED_DIR = os.path.join(PROJECT_ROOT, "cropped_dataset")
+CROPPED_DIR = os.path.join(BASE_DIR, "cropped_dataset")
 TRASH_DIR = os.path.join(CROPPED_DIR, "temp_trash")
-GREEN_THRESHOLD = 25.0  # Percentage of green pixels required
+GREEN_THRESHOLD = 30.0  # Percentage of green pixels required
 
 def filter_crops():
     db = SessionLocal()
     try:
         print(f"--- STARTING CROP FILTERING (Threshold: {GREEN_THRESHOLD}%) ---")
-        print(f"Dataset Directory: {CROPPED_DIR}")
         
         if not os.path.exists(TRASH_DIR):
             os.makedirs(TRASH_DIR, exist_ok=True)

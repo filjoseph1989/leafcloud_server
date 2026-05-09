@@ -12,8 +12,8 @@ if "microsoft-standard-WSL2" in platform.uname().release or platform.system() ==
     # buffer_size: 10MB to prevent UDP packet loss
     # fifo_size: helps with jitter
     # loglevel;quiet: silences annoying initialization/sync warnings
-    # protocol_whitelist: allows UDP stream
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "protocol_whitelist;file,rtp,udp|timeout;5000000|stimeout;5000000|buffer_size;10485760|fifo_size;500000|overrun_nonfatal;1|fflags;nobuffer|probesize;128000|analyzeduration;500000"
+    # protocol_whitelist: allows UDP and TCP streams
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "protocol_whitelist;file,rtp,udp,tcp|timeout;5000000|stimeout;5000000|buffer_size;10485760|fifo_size;500000|overrun_nonfatal;1|fflags;nobuffer|probesize;128000|analyzeduration;500000"
     
     # Debugging (optional, keeping for stability)
     if os.getenv("DEBUG_VIDEO"):
@@ -30,6 +30,30 @@ def get_host_ip():
     except:
         return "127.0.0.1"
 
+def get_all_ips():
+    """Returns all potential IPs for this host, prioritizing LAN IPs over WSL internal ones."""
+    wsl_ip = get_host_ip()
+    ips = []
+    
+    if "microsoft-standard-WSL2" in platform.uname().release:
+        try:
+            import subprocess
+            output = subprocess.check_output(["ipconfig.exe"], stderr=subprocess.DEVNULL).decode()
+            for line in output.splitlines():
+                if "IPv4 Address" in line:
+                    ip = line.split(":")[-1].strip()
+                    # Prioritize common LAN ranges (192.168.x.x, 10.x.x.x)
+                    if ip.startswith("192.168.") or ip.startswith("10."):
+                        ips.append(ip)
+                    elif ip != wsl_ip and not ip.startswith("127."):
+                        ips.append(ip)
+        except:
+            pass
+    
+    if wsl_ip not in ips:
+        ips.append(wsl_ip)
+    return ips
+
 from datetime import datetime, date
 from urllib.parse import urlparse
 from typing import Optional, List
@@ -44,6 +68,7 @@ from sqlalchemy import desc
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
+from passlib.context import CryptContext
 import anyio
 import image_filtering
 import shutil
@@ -57,11 +82,13 @@ from controllers.cropping_controller import cropping_router
 from controllers.trash_controller import trash_router
 from schemas.images import (
     BucketLabel, ActiveBucketRequest, ExperimentCreate, ExperimentResponse,
-    ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, ImageInfo,
+    ReadingHistoryItem, ExperimentHistoryResponse, LoginRequest, RegisterRequest, ImageInfo,
     ActiveExperimentRequest
 )
 
 load_dotenv()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # --- Global State ---
 active_bucket_id: Optional[str] = None
@@ -93,19 +120,25 @@ class VideoManager:
                     sep = "&" if "?" in self.source_url else "?"
                     self.source_url += f"{sep}listen=1"
                 
-                # Add robustness parameters for network jitter
+                # fifo_size: helps with jitter
+                # timeout: 5s for the initial open to keep the loop responsive
                 if "fifo_size" not in self.source_url:
-                    self.source_url += "&fifo_size=1000000&overrun_nonfatal=1&timeout=30000000"
+                    self.source_url += "&fifo_size=1000000&overrun_nonfatal=1&timeout=5000000"
             
-            host_ip = get_host_ip()
+            ips = get_all_ips()
             port = "5000"
             try: port = urlparse(self.source_url).port or "5000"
             except: pass
             
             label = "[WSL Server]" if self.is_wsl else "[Darwin Server]"
             print(f"📡 {label} Video Listener ACTIVATED on: {self.source_url}")
-            print(f"📡 {label} Send your camera stream to: {host_ip}:{port}")
-            print(f"💡 PI COMMAND: rpicam-vid -t 0 --inline -g 30 --flush -o udp://{host_ip}:{port}")
+            print(f"📡 {label} Potential IPs to use in Pi command (try LAN first):")
+            for ip in ips:
+                print(f"   - {ip}:{port}")
+            
+            # Suggest the first IP (likely LAN if on WSL)
+            primary_ip = ips[0]
+            print(f"💡 PI COMMAND: rpicam-vid -t 0 --inline -g 30 --flush -o udp://{primary_ip}:{port}")
             if self.is_wsl:
                 print(f"🛑 IMPORTANT: If it fails, check for other processes on port {port}: 'lsof -i :{port}'")
                 print(f"💡 DEBUG TIP: Test connectivity with 'nc -ul {port}' (it should show garbled data if streaming).")
@@ -131,47 +164,64 @@ class VideoManager:
         except: pass
 
         while self.running:
-            # Pre-check port on Darwin/WSL to avoid hanging
-            if self.is_wsl or self.is_darwin:
+            # 1. Pre-check: Only if we are acting as a UDP server
+            is_udp_listener = "udp://" in self.source_url and ("0.0.0.0" in self.source_url or "listen=1" in self.source_url)
+            
+            if is_udp_listener:
+                print(f"⏳ Video Manager: Checking for incoming packets on UDP {port}...")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
-                    test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    test_sock.bind(("0.0.0.0", int(port)))
-                    test_sock.close()
+                    sock.bind(("0.0.0.0", int(port)))
+                    sock.settimeout(5.0)
+                    data, addr = sock.recvfrom(1024)
+                    print(f"📡 Video Manager: SUCCESS! Received {len(data)} bytes from {addr}. Data is arriving!")
+                    sock.close()
+                except socket.timeout:
+                    print(f"⚠️ Video Manager: No UDP packets received on port {port} in 5s.")
+                    print(f"   Check your Pi command, Windows Firewall, and WSL NAT routing.")
+                    sock.close()
+                    time.sleep(2.0)
+                    continue
                 except Exception as e:
-                    print(f"⚠️ Video Manager: Port {port} seems busy ({e}). Retrying in 5s...")
+                    print(f"⚠️ Video Manager: Port check failed: {e}")
+                    sock.close()
                     time.sleep(5.0)
                     continue
 
-            # On WSL, forcing CAP_FFMPEG is often necessary
+            # 2. Open the stream with OpenCV
+            print(f"⏳ Video Manager: Opening OpenCV capture for {self.source_url}...")
             cap = cv2.VideoCapture(self.source_url, cv2.CAP_FFMPEG)
             
-            # Fallback: If it fails with full parameters, try a simpler URL
+            # Fallback 1: Try without forcing CAP_FFMPEG (some builds prefer auto-detection)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(self.source_url)
+            
+            # Fallback 2: Simple URL if the full one failed
             if not cap.isOpened() and "?" in self.source_url:
                 simple_url = self.source_url.split("?")[0]
                 print(f"⚠️ Video Manager: Retrying with simple URL: {simple_url}")
                 cap = cv2.VideoCapture(simple_url, cv2.CAP_FFMPEG)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(simple_url)
             
             if not cap.isOpened():
-                print(f"❌ Video Manager: Could not open {self.source_url}.")
-                print(f"   1. Check if the Raspberry Pi is actually streaming to {port}.")
-                if self.is_wsl:
-                    print(f"   2. IMPORTANT: Allow UDP port {port} in Windows Firewall (not just WSL).")
-                    print(f"   3. WSL2 Tip: Try using the Windows Host IP (from ipconfig) in the Pi command.")
-                    print(f"   4. Run 'python debug_video.py' for standalone diagnostics.")
-                else:
-                    print(f"   2. Check your firewall for UDP port {port}.")
-                time.sleep(3.0)
+                print(f"⚠️ Video Manager: No stream detected yet. (Ensure Pi is sending to the correct IP).")
+                time.sleep(2.0)
                 continue
 
             print(f"✅ Video Manager: Connected to {self.source_url}")
+            frame_count = 0
             while self.running:
                 success, frame = cap.read()
                 if success:
+                    frame_count += 1
                     with self.lock:
                         self.latest_frame = frame.copy()
+                    if frame_count % 100 == 0:
+                        print(f"DEBUG: Video Manager received {frame_count} frames so far.")
                 else:
-                    print(f"⚠️ Video Manager: Lost stream from {self.source_url}. Reconnecting...")
+                    print(f"⚠️ Video Manager: Lost stream from {self.source_url} after {frame_count} frames. Reconnecting...")
                     break
 
             cap.release()
@@ -180,7 +230,11 @@ class VideoManager:
     def get_latest_frame(self):
         with self.lock:
             if self.latest_frame is not None:
+                h, w = self.latest_frame.shape[:2]
+                print(f"DEBUG: VideoManager providing frame: {w}x{h}")
                 return self.latest_frame.copy()
+            else:
+                print("DEBUG: VideoManager has NO frame to provide (latest_frame is None).")
         return None
 
 video_manager = VideoManager()
@@ -493,29 +547,37 @@ def set_active_bucket(request: ActiveBucketRequest, db: Session = Depends(get_db
         "message": f"Active bucket set to {active_bucket_id}, linked to experiment {active_experiment_id}"
     }
 
+@app.post("/auth/register", status_code=201)
+def register(request: RegisterRequest, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    hashed = pwd_context.hash(request.password)
+    user = models.User(name=request.name, email=request.email, hashed_password=hashed)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "message": "Account created successfully",
+        "user": {"id": user.id, "name": user.name, "email": user.email}
+    }
+
 @app.post("/auth/login")
-def login(request: LoginRequest):
-    """
-    Simple authentication endpoint for the mobile app.
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == request.email).first()
 
-    Args:
-        request: A LoginRequest containing email and password.
+    if not user or not pwd_context.verify(request.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    Returns:
-        A dictionary containing status, token, and message if successful.
-
-    Raises:
-        HTTPException: If credentials are invalid.
-    """
-    # In a real app, verify against a Users table with hashed passwords
-    if request.email == "admin@leafcloud.com" and request.password == "admin":
-        return {
-            "status": "success",
-            "token": "demo-access-token-xyz-789",
-            "message": "Login successful"
-        }
-
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {
+        "status": "success",
+        "token": "demo-access-token-xyz-789",
+        "message": "Login successful",
+        "user": {"id": user.id, "name": user.name, "email": user.email}
+    }
 
 @app.get("/test")
 def test_connection():
@@ -687,11 +749,11 @@ async def video_feed():
 
 # --- 3. ENDPOINT FOR MOBILE APP (Android uses this) ---
 @app.get("/app/latest_status/")
-def get_dashboard_data(db: Session = Depends(get_db)):
-    # The App only ASKS for data (GET), it doesn't send data.
+def get_dashboard_data(request: Request, db: Session = Depends(get_db)):
+    # Sort by the DailyReading ID to get the absolute last record added to the DB
     latest = db.query(models.NPKPrediction)\
         .join(models.DailyReading)\
-        .order_by(desc(models.NPKPrediction.prediction_date))\
+        .order_by(desc(models.DailyReading.id))\
         .first()
 
     if not latest:
@@ -718,8 +780,30 @@ def get_dashboard_data(db: Session = Depends(get_db)):
         reading.ec
     )
 
+    # Build the full image URL
+    image_url = None
+    if reading.image_path:
+        base_url = str(request.base_url).rstrip("/")
+        # Path in DB is "images/2026-05-08/..."
+        # Mount is "/images" pointing to the "images" folder.
+        # So we need the URL to be: base_url + "/images/2026-05-08/..."
+        # BUT wait, the StaticFiles mount maps the URL prefix to the DIRECTORY content.
+        # If /images maps to the 'images' folder, then:
+        # http://host/images/foo.jpg -> images/foo.jpg
+        # If image_path is "images/2026-05-08/foo.jpg", then we just prepend base_url.
+        
+        path_suffix = reading.image_path.replace("\\", "/")
+        
+        # If the path already starts with 'images/', we just join it with the base_url
+        if path_suffix.startswith("images/"):
+            image_url = f"{base_url}/{path_suffix}"
+        else:
+            # Fallback just in case
+            image_url = f"{base_url}/images/{path_suffix}"
+
     return {
         "timestamp": latest.prediction_date,
+        "image_url": image_url,
         "sensors": {
             "ec": reading.ec,
             "ph": reading.ph,
