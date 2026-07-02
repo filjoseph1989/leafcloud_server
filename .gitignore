@@ -55,3 +55,8 @@ leafcloud2_backup_20260509_155642.sql
 
 .cropped_dataset/
 cropped_dataset/
+images_b/
+*.keras
+*.sql
+exports/
+leafcloud3_dump_20260524_231537.dump
